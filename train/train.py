@@ -26,7 +26,10 @@ from patchtomodataset import PatchTomoDataset
 
 
 if __name__ == "__main__":
-
+    #WE NEED TO USE TORCH VIDEO TRANSFORMS
+    #transforms usually work for 2d stuff with chw
+    #we need vide ofor c,d,h,w
+    #also dont work on batch dimension
     # train_transform = t.Compose([
     #     # t.ToDtype(torch.float16, scale=True),
     #     t.Normalize((0.479915,), (0.224932,))
@@ -54,7 +57,7 @@ if __name__ == "__main__":
     
     epochs = 1
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    max_motors = 11
+    max_motors = 5#max motors must be the same as our labels
     batch_size = 2
     model = MotorIdentifier(max_motors=max_motors)
 

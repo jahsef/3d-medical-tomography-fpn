@@ -1,96 +1,65 @@
 import torch
 from pathlib import Path
+import numpy as np
 
 class PatchTomoDataset(torch.utils.data.Dataset):
-    def __init__(self, list_tuple_path_labels: list[tuple],  num_patches:int, patch_size:int, mmap:bool, transform = None):
+    def __init__(self, tomo_dir_list: list[Path],  num_patches:int, mmap:bool, transform = None):
         """_summary_
         Args:
             list_tuple_path_labels (list[tuple]): list of tuple of path, labels
             
-            transform (type) doesnt work with labels yet lol
+            num_patches (int): this must be lower than total number of tomos
+            
+            transform (type) WE NEED TO USE TORCH VIDEO TRANSFORMS
         """
         
         super().__init__()
-        self.list_tuple_path_labels = list_tuple_path_labels
-        self.transform = transform
+        self.tomo_dir_list = tomo_dir_list
         self.num_patches = num_patches
         self.mmap = mmap
-        self.patch_size = patch_size
+        self.transform = transform
+        self._determine_patch_stats()
+        
+    
+    def _determine_patch_stats(self):
+        #save channels and patch_size
+        #open first tomo dir open a random patch
+        tomo_path = self.tomo_dir_list[0]
+        tomo_path:Path
+        test_patch:torch.Tensor
+        for patch_path in tomo_path.iterdir():
+            test_patch = torch.load(patch_path)
+            break
+        
+        #c,d,h,w
+        self.channels = test_patch.shape[0]
+        assert torch.allclose(test_patch.shape), 'd,h,w not all close, currently only supports d,h,w = patchsize not seperate'
+        
+        self.patch_size = test_patch.shape[1]
         
 
     def __len__(self):
-        return len(self.list_tuple_path_labels)
+        return len(self.tomo_dir_list)
 
     def __getitem__(self, idx):
         """Returns a batch of random patches and corresponding label metadata from a tensor file."""
-        path, labels = self.list_tuple_path_labels[idx]
+        #currently random sample, stratified/tomograph aware
+        rand_indices = np.random.choice(self.__len__, size = (self.num_patches,))
+        #(p,c,d,h,w)
+        cdhw = [self.channels, self.patch_size, self.patch_size, self.patch_size]
+        patches = torch.empty(size = (self.num_patches, *cdhw))
         
-        # Validate ID match
-        assert path.stem == labels['tomo_id'], \
-            f"ID mismatch: tomo={path.stem}, label={labels['tomo_id']}"
-
-        # Load tensor with memory mapping
-        tensor = torch.load(path, mmap=self.mmap)
-
-        # Add channel dimension if missing
-        if tensor.ndim == 3:
-            tensor = tensor.unsqueeze(0)  # shape becomes [1, D, H, W]
-
-        # Validate shape match
-        assert tensor.shape[1:] == labels['shape'], \
-            f"Shape mismatch in {path.stem}: got {tensor.shape[1:]}, expected {labels['shape']}"
-
-        # Get tensor dimensions
-        d, h, w = tensor.shape[1:]
-
-        # Generate random patch origins
-        rand_d = torch.randint(low=0, high=d - self.patch_size, size=(self.num_patches, 1))
-        rand_h = torch.randint(low=0, high=h - self.patch_size, size=(self.num_patches, 1))
-        rand_w = torch.randint(low=0, high=w - self.patch_size, size=(self.num_patches, 1))
-        rand_dhw = torch.cat([rand_d, rand_h, rand_w], dim=1)
-
-        # Extract patches using slice-based indexing
-        patches = []
-        for i in range(self.num_patches):
-            d_start = rand_dhw[i, 0]
-            h_start = rand_dhw[i, 1]
-            w_start = rand_dhw[i, 2]
-            patch = tensor[:, d_start:d_start + self.patch_size,
-                        h_start:h_start + self.patch_size,
-                        w_start:w_start + self.patch_size]
-            patches.append(patch)
-
-        # Stack patches into a single tensor
-        patches = torch.stack(patches, dim=0)  # Shape: (num_patches, C, patch_size, patch_size, patch_size)
-        del tensor  # Free memory early
-
-        # Apply transform if provided
-        if self.transform:
-            patches = self.transform(patches)
-
-        # Compute patch labels (unchanged from original)
-        patch_origins = rand_dhw  # (num_patches, 3)
-        patch_ends = patch_origins + self.patch_size  # (num_patches, 3)
-        patch_origins = patch_origins.unsqueeze(1)  # (num_patches, 1, 3)
-        patch_ends = patch_ends.unsqueeze(1)        # (num_patches, 1, 3)
-
-        xyzconf = labels['xyzconf']
-        label_coords = xyzconf[:, :3].unsqueeze(0)  # (1, max_motors, 3)
-
-        # Check if each label is inside each patch
-        is_inside = (label_coords >= patch_origins) & (label_coords < patch_ends)
-        is_inside = is_inside.all(dim=-1)  # (num_patches, max_motors)
-
-        # Expand mask and apply to labels
-        mask_expanded = is_inside.unsqueeze(-1)  # (num_patches, max_motors, 1)
+        for i, index in enumerate(rand_indices):
+            patch_path = tomo_dir_list[index]
+            patch = torch.load(patch_path, mmap = self.mmap)
+            if self.transform:
+                print('trasnforming check our transforms work on 2d or 3d lol dont work on batches')
+                patch = self.transform(patch)
+            patches[i] = patch
+            
+        return patches
         
-        final_labels_per_patch = torch.where(
-            mask_expanded,
-            xyzconf.unsqueeze(0).expand(self.num_patches, -1, -1),
-            torch.zeros_like(xyzconf.unsqueeze(0).expand(self.num_patches, -1, -1))
-        )
-
-        return patches, rand_dhw, final_labels_per_patch
+        
         
 import time
 
@@ -117,33 +86,20 @@ if __name__ == '__main__':
     import pandas as pd
     from torch.utils.data import DataLoader
     import time
-    max_motors = 20
-    tomo_list = utils.create_file_list(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\normalized_pt_data\train')
-    csv = pd.read_csv(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv')
-    #we load labels with some metadata for sanity check below
-    #may not need those sanity checks but whatever
-    #we only send relevant data to training loop
-    tomo_csvrow_fart = utils.map_csvs_to_pt(csv, tomo_list, max_motors= max_motors)
     
-    dataset = PatchTomoDataset(tomo_csvrow_fart, num_patches=1, patch_size=128, mmap=True, transform= None)
+    master_tomo_path = Path.cwd() / 'normalized_pt_data'
+    tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
+    
+    dataset = PatchTomoDataset(tomo_dir_list = tomo_dir_list, num_patches=1, mmap=True, transform= None)
     
     # patches, patch_origin_metadata, labels = dataset.__getitem__(idx = 0)
-    train_loader = DataLoader(dataset, batch_size = 1, shuffle = True, pin_memory= False   , num_workers=16, persistent_workers= True, prefetch_factor= 3)
+    train_loader = DataLoader(dataset, batch_size = 1, shuffle = True, pin_memory= False   , num_workers=2, persistent_workers= True, prefetch_factor= 1)
     
     thruput_tracker = ThroughputTracker()
+    print('poopy')
     for patches, patch_origin_metadata, labels in train_loader._get_iterator():
-        
-        # print(patches.shape)
-        # print(patch_origin_metadata.shape)
-        # print(labels.shape)
-        # bytes = patches.numel() * patches.dtype.itemsize
-        # mb = bytes / 1024 / 1024
-        # thruput_tracker.update(mb)
-        print(labels.shape)
-        # sum = torch.sum(labels)
-        # if sum != 0:
-        #     print(f'found correct label')
-        #     print(labels)
-        #     print(labels.shape)
-        # print(f'array dtype: {patches.dtype}')
+        print('here')
+        #data
+        #metadata global coords, xyzconf
+        pass
 
