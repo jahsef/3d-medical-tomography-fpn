@@ -31,6 +31,7 @@ class Trainer:
 
     def __init__(self, model,train_loader, val_loader, optimizer, scheduler,
                  regression_loss_fn, conf_loss_fn, regression_loss_weight, conf_loss_weight,device,
+                 patch_training:bool,
                  save_dir='./models/'):
 
         self.model = model
@@ -47,11 +48,14 @@ class Trainer:
         self.val_loader = val_loader
         self.save_dir = save_dir
         
+        self.patch_training = patch_training
 
         # Send model to device once
         self.model.to(self.device)
-
+    
+    
     def _train_one_epoch(self, epoch_index):
+        
         regression_loss_tracker = utils.LossTracker(is_mean_loss=True)
         conf_loss_tracker = utils.LossTracker(is_mean_loss=True)
 
@@ -61,14 +65,25 @@ class Trainer:
                                  desc=f"Epoch {epoch_index + 1}")
         progress_bar.ncols = 100
 
-        for batch_idx, (inputs, labels) in progress_bar:
+        for batch_idx, (inputs,patch_metadata, labels) in progress_bar:
+            inputs: torch.Tensor
+            labels: torch.Tensor
+            #inputs (b,n,c,d,h,w)
+            #labels (b,n,max_motors,4)
+            if self.patch_training:
+                b,n = inputs.shape[:2]
+
+                inputs = inputs.reshape(b*n, *inputs.shape[2:])
+                
+                labels = labels.reshape(b*n, *labels.shape[2:])
+
             batch_size = inputs.shape[0]
+            
             inputs, labels = inputs.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
             with torch.amp.autocast(device_type= "cuda"):
                 outputs = self.model(inputs)
-                #outputs (b,max_motors,4)
                 regression_loss = self.regression_loss_fn(outputs[..., :3], labels[..., :3])
                 conf_loss = self.conf_loss_fn(outputs[..., 3], labels[..., 3])
                 
@@ -98,7 +113,15 @@ class Trainer:
         self.model.eval()
 
         with torch.no_grad():
-            for inputs, labels in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
+            for inputs,patch_metadata, labels in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
+                inputs: torch.Tensor
+                labels: torch.Tensor
+                #inputs (b,n,c,d,h,w)
+                #labels (b,n,max_motors,4)
+                if self.patch_training:
+                    b,n = inputs.shape[:2]
+                    inputs = inputs.reshape(b*n, *inputs.shape[2:])
+                    labels = labels.reshape(b*n, *labels.shape[2:])
                 batch_size = inputs.shape[0]
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
                 with torch.amp.autocast(device_type= "cuda"):
@@ -113,7 +136,6 @@ class Trainer:
                 regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=batch_size)
                 conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=batch_size)
                 
-
         return regression_loss_tracker.get_epoch_loss(), conf_loss_tracker.get_epoch_loss(), combined_loss
 
     def train(self, epochs=50, save_period=0):

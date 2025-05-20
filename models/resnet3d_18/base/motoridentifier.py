@@ -1,49 +1,44 @@
 import torch.nn as nn
-from torchvision.models.video.resnet import r3d_18
-from torchvision.models.video.resnet import R3D_18_Weights
+# from torchvision.models.video.resnet import r3d_18
+# from torchvision.models.video.resnet import R3D_18_Weights
 import torch
 
+from . import nnblock
 
 class MotorIdentifier(nn.Module):
     
-    def __init__(self,max_motors = 20):
+    def __init__(self,max_motors:int):
         self.max_motors = max_motors
         super().__init__()
-        r3d = r3d_18(weights=R3D_18_Weights.DEFAULT)
-        # Get pretrained weights for first conv
-        conv1_weight = r3d.stem[0].weight.data  # shape (64, 3, 3, 7, 7)
-        # Average over channel dim to get grayscale kernel
-        new_weight = conv1_weight.mean(dim=1, keepdim=True)  # shape (64, 1, 3, 7, 7)
-        # Replace conv1 weights with new grayscale weights
-        r3d.stem[0] = nn.Conv3d(1, 64, kernel_size=(3, 7, 7),stride=(1, 2, 2), padding=(1, 3, 3), bias=False)
-        r3d.stem[0].weight.data = new_weight
-        
+
         self.features = nn.Sequential(
-            #avg tomo stats: 415 depth, 956 h/w
-            #we are going to do avg down about 1/3 per dimension
-            #actually 1/20 for prototyping
-            nn.AdaptiveAvgPool3d(output_size=(20, 47, 47)),
-            #adaptive avg pool preserves b,c dim just pool the d,h,w
-            r3d.stem,
-            r3d.layer1,
-            r3d.layer2,
-            r3d.layer3,
-            r3d.layer4,#outputs 512 feature maps
+            #stem
+            nn.Conv3d(in_channels=1, out_channels= 16, kernel_size= 3, stride = 1, padding = 1),
+            #blocks
+            nnblock.PreActResBlock3d(in_channels=16, out_channels=32, stride = 2),
+            nnblock.PreActResBlock3d(in_channels=32, out_channels=64, stride = 2),
+            nnblock.PreActResBlock3d(in_channels=64, out_channels=128, stride = 2),
+            
         )
         
-        self.globalpool = nn.AdaptiveAvgPool3d(output_size = (1, 1, 1))
+        
         #we should just get average of 512 feature maps?
         #these are basic blocks not preact so no need to apply activations after
-        
+        self.intermediate = nn.Sequential(
+            nn.AdaptiveAvgPool3d(output_size = (1, 1, 1)),
+            nn.Flatten(),
+            nn.Linear(128,256),
+            nn.SiLU()
+        )
         
         self.regression_head = nn.Sequential(
             #outputs a 3d point in space (use mse or something similar)
-            nn.Linear(512,max_motors * 3)
+            nn.Linear(256, max_motors * 3)
         )
         
         self.classification_head = nn.Sequential(
             #outputs conf logits? bce
-            nn.Linear(512,max_motors * 1)
+            nn.Linear(256,max_motors * 1)
             #use sigmoid function later on in forward
         )
         
@@ -61,8 +56,8 @@ class MotorIdentifier(nn.Module):
         """
         
         x = self.features(x)
-        x = self.globalpool(x)
-        x = x.view(x.size(0), -1)
+        x = self.intermediate(x)
+        # x = x.view(x.size(0), -1)
         points = self.regression_head(x)
         #points sahpe (b,max_motors,3), conf (b,max_motors)
         points = points.view(-1, self.max_motors, 3)
