@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 
 class PatchTomoDataset(torch.utils.data.Dataset):
-    def __init__(self, tomo_dir_list: list[Path],  num_patches:int, mmap:bool, transform = None):
+    def __init__(self, tomo_dir_list: list[Path], mmap:bool, transform = None):
         """_summary_
         Args:
             list_tuple_path_labels (list[tuple]): list of tuple of path, labels
@@ -15,7 +15,6 @@ class PatchTomoDataset(torch.utils.data.Dataset):
         
         super().__init__()
         self.tomo_dir_list = tomo_dir_list
-        self.num_patches = num_patches
         self.mmap = mmap
         self.transform = transform
         self._determine_patch_stats()
@@ -76,54 +75,36 @@ class PatchTomoDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         """Returns a batch of random patches and corresponding label metadata from a tensor file."""
-        #currently random sample, stratified/tomograph aware
-        # print(type(self.__len__()))
-        # print(type(self.num_patches))
-        tomo_rand_indices = np.random.choice(self.__len__(), size = self.num_patches)
-        #(p,c,d,h,w)
-        cdhw = [self.channels, self.patch_size, self.patch_size, self.patch_size]
-        patches = torch.empty(size = (self.num_patches, *cdhw), dtype = self.patch_dtype)
-        xyzconf = torch.empty(size = (self.num_patches,self.max_motors, 4), dtype = torch.float32)
-        global_coords = torch.empty(size = (self.num_patches,3), dtype = torch.int32)
+        #currently random sample of tomos with a random patch from a tomo, stratified/tomograph aware later
+        rand_patch:torch.Tensor
+        rand_tomo_dir:Path
+        #load a random tomo
+        rand_tomo_index = np.random.choice(self.__len__())
+        rand_tomo_dir = self.tomo_dir_list[rand_tomo_index]
+        #load a random patch
+        patch_paths = [x for x in rand_tomo_dir.iterdir() if x.is_file()]
+        num_rand_patches = len(patch_paths)
+        rand_patch_index = np.random.choice(num_rand_patches)
+        rand_patch_path = patch_paths[rand_patch_index]
+        file = torch.load(rand_patch_path, mmap = self.mmap)
+        #load data from patch
+        rand_patch = file['data']
+        metadata = file['metadata']
+        rand_xyzconf = metadata['xyzconf']
+        rand_global_coords = metadata['global_coords']
         
-        for i, rand_index in enumerate(tomo_rand_indices):
-            curr_patch:torch.Tensor
-            rand_tomo_dir:Path
-            
-            
-            rand_tomo_dir = self.tomo_dir_list[rand_index]
-            
-            patch_paths = [x for x in rand_tomo_dir.iterdir() if x.is_file()]
-            
-            num_rand_patches = len(patch_paths)
+        if rand_patch.ndim == 3:
+            #oh we unsqueezin it
+            rand_patch.unsqueeze(0)
+    
+        if self.transform:
+            print('trasnforming check our transforms work on 2d or 3d lol dont work on batches')
+            rand_patch = self.transform(rand_patch)
 
-            
-            
-            rand_patch_index = np.random.choice(num_rand_patches)
-            
-            rand_patch_path = patch_paths[rand_patch_index]
-            
-            file = torch.load(rand_patch_path, mmap = self.mmap)
-            curr_patch = file['data']
-            
-            metadata = file['metadata']
-            curr_xyzconf = metadata['xyzconf']
-            curr_global_coords = metadata['global_coords']
-            
-            if curr_patch.ndim == 3:
-                #oh we unsqueezin it
-                curr_patch.unsqueeze(0)
-            
-            if self.transform:
-                print('trasnforming check our transforms work on 2d or 3d lol dont work on batches')
-                curr_patch = self.transform(curr_patch)
-            # print(curr_xyzconf.shape)
-            patches[i] = curr_patch
-            xyzconf[i] = curr_xyzconf
-            global_coords[i] = curr_global_coords
-            
-        # print(type(patches))
-        return patches, xyzconf, global_coords
+        #TODO: add assertions here for shapes
+        # cdhw = [self.channels, self.patch_size, self.patch_size, self.patch_size]
+        
+        return rand_patch, rand_xyzconf, rand_global_coords
         
 import time
 
@@ -164,12 +145,13 @@ if __name__ == '__main__':
     master_tomo_path = Path.cwd() / 'normalized_pt_data/train'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
     
-    dataset = PatchTomoDataset(tomo_dir_list = tomo_dir_list, num_patches=128, mmap=False, transform= None)
+    dataset = PatchTomoDataset(tomo_dir_list = tomo_dir_list, mmap=True, transform= None)
     
     # patches, patch_origin_metadata, labels = dataset.__getitem__(idx = 0)
-    dataloader = DataLoader(dataset, batch_size = 1, shuffle = True, pin_memory= False   , num_workers=0, persistent_workers= False, prefetch_factor= None)
+    dataloader = DataLoader(dataset, batch_size = 128, shuffle = True, pin_memory= False   , num_workers=16, persistent_workers= True, prefetch_factor= 2)
     
     main_thruput_tracker = ThroughputTracker('patch')
+    
     # extra_thruput_tracker = ThroughputTracker('extras')
     # print('poopy')
     
