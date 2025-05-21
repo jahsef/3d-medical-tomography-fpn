@@ -170,7 +170,18 @@ def write_whole_directory(
     with Pool(processes=max_processes) as pool:
         pool.map(write_tomo_patches, args_list)
 
+
+def prune_empty_dirs(master_tomo_dir:Path):
+    print('rmdirs')
+    tomo_dirs = [x for x in master_tomo_dir.iterdir() if x.is_dir()]
+    for dir in tomo_dirs:
+        files = [x for x in dir.iterdir() if x.is_file()]
+        if len(files) == 0:
+            os.rmdir(dir)
+    print('finished removing empty dirs')
+
 if __name__ == '__main__':
+    import os
     src_root = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train')
     dst_root = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\normalized_pt_data\train')
     csv_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv')
@@ -184,14 +195,23 @@ if __name__ == '__main__':
     global_max_motors = 20
     patch_max_motors = 5
     
-    write_whole_directory(
-        src=src_root,
-        dst=dst_root,
-        empty_keep_fraction= empty_keep_fraction,
-        patch_size=patch_size,
-        stride=stride,
-        csv_path=csv_path,
-        global_max_motors=global_max_motors,
-        patch_max_motors=patch_max_motors,
-        max_processes=workers
-    )
+    #NEED TO REMOVE EMPTY DIRS
+    
+
+    
+    # write_whole_directory(
+    #     src=src_root,
+    #     dst=dst_root,
+    #     empty_keep_fraction= empty_keep_fraction,
+    #     patch_size=patch_size,
+    #     stride=stride,
+    #     csv_path=csv_path,
+    #     global_max_motors=global_max_motors,
+    #     patch_max_motors=patch_max_motors,
+    #     max_processes=workers
+    # )
+    
+    prune_empty_dirs(dst_root)
+    
+    
+    
