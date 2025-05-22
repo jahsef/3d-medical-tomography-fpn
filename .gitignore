@@ -2,3 +2,5 @@
 /normalized_pt_data/
 *.pyc
 *.zip
+*.pt
+*.csv

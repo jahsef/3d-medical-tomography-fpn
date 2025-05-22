@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch
 
 from . import nnblock
+from itertools import product
 
 class MotorIdentifier(nn.Module):
     
@@ -68,14 +69,80 @@ class MotorIdentifier(nn.Module):
 
         return outputs
 
-    def predict(self,x):
-        with torch.no_grad():
-            outputs = self.forward(x)
-            outputs[:, :, 3] = torch.nn.functional.sigmoid(outputs[:, :, 3])
-            return outputs
-  
+    @torch.inference_mode()
+    #just disabled until i know eveyrtihng works lol
+    # @torch.amp.autocast(device_type='cuda')
+    def inference(self,x:torch.Tensor, num_patches_per_batch:int, patch_size:int, stride:int, conf_threshold:float):
+        """_summary_
+        Args:
+            x (torch.Tensor): shape (b,c,d,h,w)
+            
+            batching not working yet
+
+        Returns:
+            _type_: _description_
+        """
+        #THIS IS FOR TRAINING SCRIPT LATER
+        # 1. create a new dir for full tomograms in .pt format (only from my validation stuff since it takes 10000000 gb of data)
+        # 2. i have paths to my tomogram patch directories right, so at start of runtime i would reconstruct the full tomogram dirs from my list (i dont want to manually do this)
+        # 3. pass in the list of paths to validation
+        
+    
+        
+        # 1. create all subpatches 
+        # 2. remove padded rows since its nice for forward passes but not here
+        # 3. compute global prediction coords
+        # 4. concat along dimension 1
+        # 5. apply nms / voxel downsampling / whatever
+        # 6. profit
+        
+        D,H,W = x.shape[2:]
+        start_d = self._get_start_indices(D, patch_size, stride)
+        start_h = self._get_start_indices(H, patch_size, stride)
+        start_w = self._get_start_indices(W, patch_size, stride)
+        
+        #loop through all patches creating batches on the fly
+    
+        for d, h, w in product(start_d, start_h, start_w):
+            #add batching later
+            patch = x[d:d+patch_size, h:h+patch_size, w:w+patch_size]
+            output = self.forward(patch)
+            #output (b, max_motors, 4)
+            output[:, :, 3] = torch.sigmoid(output[:, :,  3])#conf scaling
+            #apply conf threshold here
+            conf_mask = output[:, :, 3] > conf_threshold
+            output = output[conf_mask]
+            if output.numel() == 0:
+                continue
+            #now we only have relevant stuff
+            #global coords in this case is d,h,w
+            #no need to pass stuff in
+            #now we need to just add global coords to each dimension lol
+            output
+            
+        #log metrics like how many points were pruned
+            
+            
+            
+            
+
+            
+
+
+    def _get_start_indices(self,length, window_size, stride):
+        indices = []
+        n_windows = (length - window_size) // stride + 1
+        for i in range(n_windows):
+            start = i * stride
+            indices.append(start)
+        last_start = (n_windows - 1) * stride
+        if last_start + window_size < length:
+            indices.append(length - window_size)
+        return indices
+
+
 if __name__ == '__main__':
-    model = r3d_18(R3D_18_Weights)
+    # model = r3d_18(R3D_18_Weights)
     # # conv1_weight = model.stem[0].weight.data  # shape (64, 3, 3, 7, 7)
     print(model.layer4)#should output 512,512,3,3,3
 

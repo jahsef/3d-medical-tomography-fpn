@@ -89,11 +89,13 @@ class MotorIdentifier(nn.Module):
         # 1. create a new dir for full tomograms in .pt format (only from my validation stuff since it takes 10000000 gb of data)
         # 2. i have paths to my tomogram patch directories right, so at start of runtime i would reconstruct the full tomogram dirs from my list (i dont want to manually do this)
         # 3. pass in the list of paths to validation
-
+        
+    
+        
         # 1. create all subpatches 
         # 2. remove padded rows since its nice for forward passes but not here
         # 3. compute global prediction coords
-        # 4. concat along dimension 0
+        # 4. concat along dimension 1
         # 5. apply nms / voxel downsampling / whatever
         # 6. profit
         
@@ -103,7 +105,7 @@ class MotorIdentifier(nn.Module):
         start_w = self._get_start_indices(W, patch_size, stride)
         
         #loop through all patches creating batches on the fly
-        aggregated_predictions = []
+    
         for d, h, w in product(start_d, start_h, start_w):
             #add batching later
             patch = x[d:d+patch_size, h:h+patch_size, w:w+patch_size]
@@ -115,23 +117,13 @@ class MotorIdentifier(nn.Module):
             output = output[conf_mask]
             if output.numel() == 0:
                 continue
+            #now we only have relevant stuff
+            #global coords in this case is d,h,w
+            #no need to pass stuff in
+            #now we need to just add global coords to each dimension lol
+            output
             
-            #convert to global coords here
-            output[:, :, 0] += d
-            output[:, :, 1] += h
-            output[:, :, 2] += w
-            #aggregate all outputs now
-            aggregated_predictions.append(output)
-        
-        #concat tensors across the batch dim    
-        torch.cat(aggregated_predictions, dim = 0)
-        #run point cloud voxel downsample or nms like algorithm
-        
-        #return the
-        
-        #log metrics like how many points were pruned maybe?
-        #if validation then log it/ return it somehow idk
-        
+        #log metrics like how many points were pruned
             
             
             

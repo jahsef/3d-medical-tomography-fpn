@@ -121,7 +121,9 @@ class PatchTomoDataset(torch.utils.data.Dataset):
             patches[i] = curr_patch
             xyzconf[i] = curr_xyzconf
             global_coords[i] = curr_global_coords
-            
+            #TODO:add some assertions here
+        
+        
         # print(type(patches))
         return patches, xyzconf, global_coords
         
@@ -164,10 +166,10 @@ if __name__ == '__main__':
     master_tomo_path = Path.cwd() / 'normalized_pt_data/train'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
     
-    dataset = PatchTomoDataset(tomo_dir_list = tomo_dir_list, num_patches=128, mmap=False, transform= None)
+    dataset = PatchTomoDataset(tomo_dir_list = tomo_dir_list, num_patches=128, mmap=True, transform= None)
     
     # patches, patch_origin_metadata, labels = dataset.__getitem__(idx = 0)
-    dataloader = DataLoader(dataset, batch_size = 1, shuffle = True, pin_memory= False   , num_workers=0, persistent_workers= False, prefetch_factor= None)
+    dataloader = DataLoader(dataset, batch_size = 1, shuffle = True, pin_memory= True   , num_workers=0, persistent_workers= False, prefetch_factor= None)
     
     main_thruput_tracker = ThroughputTracker('patch')
     # extra_thruput_tracker = ThroughputTracker('extras')

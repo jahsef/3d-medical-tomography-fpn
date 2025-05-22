@@ -24,56 +24,7 @@ from sklearn.model_selection import train_test_split
 import utils
 from patchtomodataset import PatchTomoDataset
 
-from natsort import natsorted
-import imageio.v3 as iio
-import numpy as np
 
-def write_tomos(list_val_paths):
-    """
-    writes tomos if they dont exist, used for validation
-    """
-    IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.tif', '.tiff'}
-    
-    transform = t.Compose([
-    t.ToDtype(torch.float16, scale=True),
-    t.Normalize((0.479915,), (0.224932,))
-    ])
-    
-    dst = Path.cwd() / 'normalized_val_fulltomo'
-    for patches_path in list_val_paths:
-        path:Path
-
-        tomo_id = patches_path.name
-        
-        print(tomo_id)
-        
-        tomo_pt_path = dst / Path(str(tomo_id) + '.pt')
-        
-        if tomo_pt_path.exists():
-            continue
-        
-        print(f'Writing full tomogram: {patches_path.name}')
-        #find original images path
-        images_path = Path.cwd() / 'original_data/train' / patches_path.name
-        
-        files = [
-            f for f in images_path.rglob('*')
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTS
-        ]
-        
-        files = natsorted(files, key=lambda x: x.name)
-        
-        imgs = [iio.imread(file, mode="L") for file in files]
-        
-        tomo_array = np.stack(imgs)
-        
-        # Convert to tensor and normalize
-        tomo_tensor = torch.as_tensor(tomo_array)
-        tomo_tensor = transform(tomo_tensor)
-        
-        torch.save(tomo_tensor, tomo_pt_path)
-        
-    
 if __name__ == "__main__":
     #WE NEED TO USE TORCH VIDEO TRANSFORMS
     #transforms usually work for 2d stuff with chw
@@ -89,7 +40,7 @@ if __name__ == "__main__":
     #     t.Normalize((0.479915,), (0.224932,))
     # ])
 
-
+    # device = torch.device('cpu')
 
     #TODO visualization/logging
     #log f1 beta weighted stuff with precision + recall too
@@ -114,10 +65,6 @@ if __name__ == "__main__":
     master_tomo_path = Path.cwd() / 'normalized_pt_data/train'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
     train_set, val_set = train_test_split(tomo_dir_list, train_size= 0.8, test_size= 0.2, random_state= 42)
-    
-    write_tomos(val_set)
-    print('done')
-    raise Exception('done')
     patch_training = True
     num_patches = 6
     train_dataset = PatchTomoDataset(train_set, num_patches= num_patches, mmap = False, transform= None)
