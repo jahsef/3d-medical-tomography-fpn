@@ -85,6 +85,7 @@ class PatchTomoDataset(torch.utils.data.Dataset):
         patches = torch.empty(size = (self.num_patches, *cdhw), dtype = self.patch_dtype)
         xyzconf = torch.empty(size = (self.num_patches,self.max_motors, 4), dtype = torch.float32)
         global_coords = torch.empty(size = (self.num_patches,3), dtype = torch.int32)
+        valid_mask = torch.empty(size = (self.num_patches,self.max_motors), dtype = torch.int32)
         
         for i, rand_index in enumerate(tomo_rand_indices):
             curr_patch:torch.Tensor
@@ -103,7 +104,9 @@ class PatchTomoDataset(torch.utils.data.Dataset):
             
             rand_patch_path = patch_paths[rand_patch_index]
             
-            file = torch.load(rand_patch_path, mmap = self.mmap)
+
+            file = torch.load(rand_patch_path, mmap=self.mmap)
+                
             curr_patch = file['data']
             
             metadata = file['metadata']
@@ -112,20 +115,25 @@ class PatchTomoDataset(torch.utils.data.Dataset):
             
             if curr_patch.ndim == 3:
                 #oh we unsqueezin it
-                curr_patch.unsqueeze(0)
+                curr_patch = curr_patch.unsqueeze(0)
             
             if self.transform:
-                print('trasnforming check our transforms work on 2d or 3d lol dont work on batches')
+                # print('trasnforming check our transforms work on 2d or 3d lol dont work on batches')
+                # print(curr_patch.shape)
                 curr_patch = self.transform(curr_patch)
             # print(curr_xyzconf.shape)
+            curr_valid_mask = (curr_xyzconf[:, 3] > 0)  # Shape: [max_motors] for THIS sample only
+            valid_mask[i] = curr_valid_mask
             patches[i] = curr_patch
             xyzconf[i] = curr_xyzconf
             global_coords[i] = curr_global_coords
+            
+            del file
+            # file.close()
             #TODO:add some assertions here
         
-        
         # print(type(patches))
-        return patches, xyzconf, global_coords
+        return patches, xyzconf, global_coords, valid_mask
         
 import time
 
@@ -170,14 +178,14 @@ if __name__ == '__main__':
     
     # patches, patch_origin_metadata, labels = dataset.__getitem__(idx = 0)
     dataloader = DataLoader(dataset, batch_size = 1, shuffle = True, pin_memory= True   , num_workers=0, persistent_workers= False, prefetch_factor= None)
-    
+     
     main_thruput_tracker = ThroughputTracker('patch')
     # extra_thruput_tracker = ThroughputTracker('extras')
     # print('poopy')
     
     while True:
         try:
-            for patches, labels, global_coords in dataloader:
+            for patches, labels, global_coords, valid_mask in dataloader:
                 num_bytes = patches.numel() * patches.element_size()
                 main_mb = num_bytes / 1024 / 1024
                 main_thruput_tracker.update(main_mb)

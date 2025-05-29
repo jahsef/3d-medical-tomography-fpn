@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 import utils
+import gc
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -53,32 +55,38 @@ class Trainer:
         # Send model to device once
         self.model.to(self.device)
         
-    def _compute_batch_loss(self, patches, xyzconf):
+    def _compute_batch_loss(self, patches, xyzconf, valid_mask):
         """
         Compute regression and confidence losses for a batch.
         
         Args:
             patches (torch.Tensor): Input patches tensor.
             xyzconf (torch.Tensor): Ground truth xyz + confidence values.
+            valid_mask (torch.Tensor): precomputed bool mask if conf > 0, used for regression loss masking
             
         Returns:
             regression_loss (torch.Tensor)
             conf_loss (torch.Tensor)
             combined_loss (torch.Tensor)
         """
-        if self.patch_training:
-            b, n = patches.shape[:2]
-            patches = patches.reshape(b * n, *patches.shape[2:])
-            xyzconf = xyzconf.reshape(b * n, *xyzconf.shape[2:])
 
+        b, n = patches.shape[:2]
+        patches = patches.view(b * n, *patches.shape[2:])#reshaped into (b*n, *cdhw)
+        xyzconf = xyzconf.view(b * n, *xyzconf.shape[2:])#reshaped into (b*n, 4)
+        valid_mask = valid_mask.view(b*n, valid_mask.shape[2])#(b*n, max_motors)
+        
         patches = patches.to(self.device)
         xyzconf = xyzconf.to(self.device)
+        valid_mask = valid_mask.to(self.device)
 
         with torch.amp.autocast(device_type="cuda"):
             outputs = self.model(patches)
-            regression_loss = self.regression_loss_fn(outputs[..., :3], xyzconf[..., :3])
+            #regression loss should only be from ground truth non zeros
+            #[valid_mask:3] chooses the correct rows
+            #if we use [..., :3][valid_mask] thats incorrect because of shapes
+            regression_loss = self.regression_loss_fn(outputs[valid_mask, :3], xyzconf[valid_mask, :3])
             conf_loss = self.conf_loss_fn(outputs[..., 3], xyzconf[..., 3])
-
+                        
         weighted_regression_loss = self.regression_loss_weight * regression_loss
         weighted_conf_loss = self.conf_loss_weight * conf_loss
         combined_loss = weighted_regression_loss + weighted_conf_loss
@@ -86,6 +94,10 @@ class Trainer:
         return regression_loss, conf_loss, combined_loss 
     
     def _train_one_epoch(self, epoch_index):
+        # Clear CUDA cache at start of epoch
+        # if torch.cuda.is_available():
+        #     torch.cuda.empty_cache()
+        
         regression_loss_tracker = utils.LossTracker(is_mean_loss=True)
         conf_loss_tracker = utils.LossTracker(is_mean_loss=True)
 
@@ -95,14 +107,16 @@ class Trainer:
                             desc=f"Epoch {epoch_index}")
         progress_bar.ncols = 100
 
-        for batch_idx, (patches, xyzconf, global_coords) in progress_bar:
+        for batch_idx, (patches, xyzconf, global_coords, valid_mask) in progress_bar:
             patches: torch.Tensor
             xyzconf: torch.Tensor
 
             self.optimizer.zero_grad()
-            regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, xyzconf)
+            regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, xyzconf, valid_mask)
             combined_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
             self.optimizer.step()
+            self.scheduler.step()
 
             regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patches.shape[0])
             conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
@@ -113,6 +127,13 @@ class Trainer:
                     loss=f"regression loss: {regression_loss_tracker.get_epoch_loss():.4f}, "
                         f"conf loss: {conf_loss_tracker.get_epoch_loss():.4f}"
                 )
+                
+            # Clear memory at end of batch
+            if (batch_idx + 1) % 10 == 0:  # Every 10 batches
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+                        
         regression_loss = regression_loss_tracker.get_epoch_loss()
         conf_loss = conf_loss_tracker.get_epoch_loss()
         combined_loss = regression_loss + conf_loss
@@ -130,8 +151,8 @@ class Trainer:
         self.model.eval()
 
         with torch.no_grad():
-            for patches, xyzconf, global_coords in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
-                regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, xyzconf)
+            for patches, xyzconf, global_coords, valid_mask in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
+                regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, xyzconf, valid_mask)
 
                 regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patches.shape[0])
                 conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
@@ -153,7 +174,7 @@ class Trainer:
         for epoch in range(epochs):
             train_regression_loss, train_conf_loss, train_total_loss = self._train_one_epoch(epoch)
             val_regression_loss, val_conf_loss, val_total_loss = self._validate_one_epoch()
-            self.scheduler.step()
+            
             
             print(f"Epoch {epoch}:")
             print(f"  Train Regression Loss: {train_regression_loss:.6f} | Val Regression Loss: {val_regression_loss:.6f}")

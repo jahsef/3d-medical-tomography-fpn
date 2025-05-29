@@ -2,7 +2,7 @@ import torch.nn as nn
 # from torchvision.models.video.resnet import r3d_18
 # from torchvision.models.video.resnet import R3D_18_Weights
 import torch
-
+from torchvision.ops import DropBlock3d
 from . import nnblock
 from itertools import product
 
@@ -13,14 +13,20 @@ class MotorIdentifier(nn.Module):
         super().__init__()
 
         
-        features_out_channels = 32
+        features_out_channels = 256
         self.features = nn.Sequential(
             #stem
-            nn.Conv3d(in_channels=1, out_channels= 16, kernel_size= 3, stride = 1, padding = 1),
+            nn.Conv3d(in_channels=1, out_channels= 16, kernel_size= 3, stride = 1, padding = 1, bias = False),
             #blocks
-            nnblock.PreActResBlock3d(in_channels=16, out_channels=16, stride = 2),
-            nnblock.PreActResBlock3d(in_channels=16, out_channels=32, stride = 2),
-            nnblock.PreActResBlock3d(in_channels=32, out_channels=features_out_channels, stride = 2),
+            nnblock.PreActResBlock3d(in_channels=16, out_channels=16),#64
+            nnblock.PreActResBlock3d(in_channels=16, out_channels=32, stride = 2),#32
+            nnblock.PreActResBlock3d(in_channels=32, out_channels=32),#32
+            nnblock.PreActResBlock3d(in_channels=32, out_channels=64, stride = 2),#16
+            nnblock.PreActResBlock3d(in_channels=64, out_channels=64),#16
+            nnblock.PreActResBlock3d(in_channels=64, out_channels=128, stride = 2),#8
+            nnblock.PreActResBlock3d(in_channels=128, out_channels=128),#8
+            nnblock.PreActResBlock3d(in_channels=128, out_channels=features_out_channels, stride = 2),#4
+            nnblock.PreActResBlock3d(in_channels=features_out_channels, out_channels=features_out_channels),#4
         )
         
         
@@ -29,20 +35,25 @@ class MotorIdentifier(nn.Module):
         self.intermediate = nn.Sequential(
             nn.BatchNorm3d(features_out_channels),
             nn.SiLU(inplace= True),
-            nn.AdaptiveAvgPool3d(output_size = (1, 1, 1)),
+            # DropBlock3d(p = 0.1, block_size= 1,inplace=True ),
+            nn.Dropout3d(p = 0.1, inplace=True),
+            # nn.AdaptiveAvgPool3d(output_size = (1, 1, 1)),
             nn.Flatten(),
         )
         
+        feature_map_size = 4**3
+        linear_channels = features_out_channels * feature_map_size
         self.regression_head = nn.Sequential(
-            nn.Linear(features_out_channels,features_out_channels*2),
-            nn.SiLU(),
+            nn.Linear(linear_channels,512),
+            nn.Dropout(p = 0.25, inplace=True),
+            nn.SiLU(inplace= True),
             #outputs a 3d point in space (use mse or something similar)
-            nn.Linear(features_out_channels*2, max_motors * 3)
+            nn.Linear(512, max_motors * 3)
         )
         
         self.classification_head = nn.Sequential(
             #outputs conf logits? bce
-            nn.Linear(features_out_channels,max_motors * 1)
+            nn.Linear(linear_channels,max_motors * 1)
             #use sigmoid function later on in forward
         )
         
@@ -74,7 +85,7 @@ class MotorIdentifier(nn.Module):
 
     @torch.inference_mode()
     #just disabled until i know eveyrtihng works lol
-    # @torch.amp.autocast(device_type='cuda')
+    @torch.amp.autocast(device_type='cuda')
     def inference(self,x:torch.Tensor, num_patches_per_batch:int, patch_size:int, stride:int, conf_threshold:float):
         """_summary_
         Args:
@@ -89,13 +100,11 @@ class MotorIdentifier(nn.Module):
         # 1. create a new dir for full tomograms in .pt format (only from my validation stuff since it takes 10000000 gb of data)
         # 2. i have paths to my tomogram patch directories right, so at start of runtime i would reconstruct the full tomogram dirs from my list (i dont want to manually do this)
         # 3. pass in the list of paths to validation
-        
-    
-        
+
         # 1. create all subpatches 
         # 2. remove padded rows since its nice for forward passes but not here
         # 3. compute global prediction coords
-        # 4. concat along dimension 1
+        # 4. concat along dimension 0
         # 5. apply nms / voxel downsampling / whatever
         # 6. profit
         
@@ -105,26 +114,46 @@ class MotorIdentifier(nn.Module):
         start_w = self._get_start_indices(W, patch_size, stride)
         
         #loop through all patches creating batches on the fly
-    
+        aggregated_predictions = []
         for d, h, w in product(start_d, start_h, start_w):
             #add batching later
-            patch = x[d:d+patch_size, h:h+patch_size, w:w+patch_size]
+            patch = x[:, :, d:d+patch_size, h:h+patch_size, w:w+patch_size]
+            # print('inference')
+            # print(patch.dtype)
+            # print(patch.shape)
+            # print(w)
             output = self.forward(patch)
             #output (b, max_motors, 4)
             output[:, :, 3] = torch.sigmoid(output[:, :,  3])#conf scaling
             #apply conf threshold here
             conf_mask = output[:, :, 3] > conf_threshold
+
+            # print(output.shape)
             output = output[conf_mask]
+            #after applying mask we lose batch dimension
+            #turns into (num_1s, 4)
             if output.numel() == 0:
                 continue
-            #now we only have relevant stuff
-            #global coords in this case is d,h,w
-            #no need to pass stuff in
-            #now we need to just add global coords to each dimension lol
-            output
             
-        #log metrics like how many points were pruned
+            #convert to global coords here
+            output[:, 0] += d
+            output[:, 1] += h
+            output[:, 2] += w
+            #aggregate all outputs now
+            aggregated_predictions.append(output)
+
+        #concat tensors across the batch dim    
+        if len(aggregated_predictions) > 0:
             
+            return torch.cat(aggregated_predictions, dim = 0)
+
+        return None
+        #run point cloud voxel downsample or nms like algorithm
+        #return the
+        #log metrics like how many points were pruned maybe?
+        #if validation then log it/ return it somehow idk
+        
+        
             
             
             
