@@ -81,6 +81,7 @@ def write_tomos(list_val_paths):
 
     
 if __name__ == "__main__":
+    
     #WE NEED TO USE TORCH VIDEO TRANSFORMS
     #transforms usually work for 2d stuff with chw
     #we need vide ofor c,d,h,w
@@ -91,11 +92,12 @@ if __name__ == "__main__":
     #     # t.RandomAutocontrast(),
     #     t.ColorJitter(0.1, 0.1, 0.1),
     # ])
-    # train_transform = tio.Compose([
-    #     tio.RandomNoise(std=0.1),#this one doesnt support fp16 p??? weird
-    #     tio.RandomBlur(std=(0.5, 1.0), p= 0.3),  
-
-    # ])
+    
+    train_transform = tio.Compose([
+        tio.RandomNoise(std=0.1),#this one doesnt support fp16 p??? weird
+        tio.RandomBlur(std=(0.5, 1.0), p= 0.3),  
+    ])
+    
     train_transform = None
 
     # val_transform = t.Compose([
@@ -120,44 +122,62 @@ if __name__ == "__main__":
     
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    max_motors = 5#max motors must be the same as our labels
+    max_motors_per_patch = 1
 
-    batch_size = 1
-    model = MotorIdentifier(max_motors=max_motors)
+    model = MotorIdentifier(max_motors=max_motors_per_patch)
 
     master_tomo_path = Path.cwd() / 'normalized_pt_data/train'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
     train_set, val_set = train_test_split(tomo_dir_list, train_size= 0.8, test_size= 0.2, random_state= 42)
-    
     # write_tomos(val_set)
-    # print('done')
-    # raise Exception('done')
-    patch_training = True
-    num_patches = 48
-    train_dataset = PatchTomoDataset(train_set, num_patches= num_patches, mmap = False, transform= train_transform)
-    val_dataset = PatchTomoDataset(val_set, num_patches= num_patches, mmap = False, transform= None)
+    # time.sleep(10000)
+    from zarrdataset import load_labels, OnDemandBalancedPatchDataset
+    # Load labels
+    csv_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv')
     
-    pin_memory = False
-    num_workers = 6
-    persistent_workers = True
-    prefetch_factor = 2
+    labels_dict = load_labels(csv_path, max_motors_per_patch=max_motors_per_patch)
     
+    # Create data items
+    zarr_files = list(Path("normalized_zarr_data/train").glob("*.zarr"))
     
-    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True, pin_memory =pin_memory, num_workers=num_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
-    
+    # Create memory-efficient dataset
+    batch_size = 64
+    batches_per_epoch = 128
+    dataset = OnDemandBalancedPatchDataset(
+        zarr_files=zarr_files,
+        labels_dict=labels_dict,
+        patch_size=(64, 64, 64),
+        max_motors_per_patch=max_motors_per_patch,
+        positive_ratio=0.1,
+        samples_per_epoch=batch_size * batches_per_epoch,
+        stride_factor=0.5,
+        seed=42
+    )
+
+    # Create dataloader
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        num_workers=4,
+        shuffle=False,  # Deterministic but varied sampling
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2
+    )
     #we need to load full tomos for validation
     #create tomos at runtime if they are missing
     #dir full_tomos (need to apply transforms too)
     
     #val loader is poopy since we only load random number of patches from our dataset
     #not full patches or full tomos
-    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle = False, pin_memory =pin_memory, num_workers=num_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
+    
     
     #loader yields tuple of tensor, label(tomo_id, shape, coords, mask)
     # time.sleep(1000)
     
-    regression_loss_fn = torch.nn.MSELoss()
-    pos_weight = torch.tensor([2.0]).to(device)
+    regression_loss_fn = torch.nn.SmoothL1Loss(beta=0.1)#lower beta = more robust to outliers
+    
+    pos_weight = torch.tensor([0.001]).to(device)
     conf_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     
     #we can weight the positives more for better recall
@@ -166,7 +186,7 @@ if __name__ == "__main__":
     #criterion_conf = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(10.0))
     #label smoothing too?? idk
     epochs = 50 
-    steps_per_epoch = len(train_loader)
+    steps_per_epoch = len(dataloader)
     total_steps = epochs * steps_per_epoch
     warmup_steps = int(0.05 * total_steps)#% of steps warmup, 5% is about 2 epochs
     
@@ -203,15 +223,15 @@ if __name__ == "__main__":
     # Train and validate the model
     trainer = Trainer(
         model=model,
-        patch_training=patch_training,
-        train_loader=train_loader,
-        val_loader=val_loader,
+        patch_training=True,
+        train_loader=dataloader,
+        val_loader=None,
         optimizer=optimizer,
         scheduler = scheduler,
         regression_loss_fn=regression_loss_fn,
         conf_loss_fn = conf_loss_fn,
         regression_loss_weight = 1.0,
-        conf_loss_weight= 1.0,
+        conf_loss_weight= 2.0,
         device=device,
         save_dir = save_dir
         )

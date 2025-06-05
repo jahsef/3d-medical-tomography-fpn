@@ -71,9 +71,10 @@ class Trainer:
         """
 
         b, n = patches.shape[:2]
-        patches = patches.view(b * n, *patches.shape[2:])#reshaped into (b*n, *cdhw)
-        xyzconf = xyzconf.view(b * n, *xyzconf.shape[2:])#reshaped into (b*n, 4)
-        valid_mask = valid_mask.view(b*n, valid_mask.shape[2])#(b*n, max_motors)
+        patches = patches.view(b, *patches.shape[1:])#reshaped into (b*n, *cdhw)
+        xyzconf = xyzconf.view(b, *xyzconf.shape[1:])#reshaped into (b*n, 4)
+        # print(valid_mask.shape)
+        valid_mask = valid_mask.view(b, valid_mask.shape[1])#(b*n, max_motors)
         
         patches = patches.to(self.device)
         xyzconf = xyzconf.to(self.device)
@@ -106,20 +107,31 @@ class Trainer:
         progress_bar = tqdm(enumerate(self.train_loader), total=total_batches,
                             desc=f"Epoch {epoch_index}")
         progress_bar.ncols = 100
-
-        for batch_idx, (patches, xyzconf, global_coords, valid_mask) in progress_bar:
-            patches: torch.Tensor
-            xyzconf: torch.Tensor
-
+        # return {
+        #     'image': torch.from_numpy(patch_data),
+        #     'labels': torch.from_numpy(local_labels),
+        #     'num_motors': int(np.sum(local_labels[:, 3] > 0)),
+        #     'valid_mask': local_labels[:,3] > 0,
+        #     'tomo_id': tomo_id,
+        #     'patch_coords': start,
+        #     'is_positive': int(np.sum(local_labels[:, 3] > 0) > 0)
+        # }
+        for batch_idx, batch in progress_bar:
+            patch: torch.Tensor
+            labels: torch.Tensor
+            patch = batch['image']
+            labels = batch['labels']
+            valid_mask = batch['valid_mask']
+            
             self.optimizer.zero_grad()
-            regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, xyzconf, valid_mask)
+            regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patch, labels, valid_mask)
             combined_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
             self.optimizer.step()
             self.scheduler.step()
 
-            regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patches.shape[0])
-            conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
+            regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patch.shape[0])
+            conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patch.shape[0])
 
 
             if (batch_idx + 1) % 1 == 0 or (batch_idx + 1) == total_batches:
@@ -149,19 +161,26 @@ class Trainer:
         conf_loss_tracker = utils.LossTracker(is_mean_loss=True)
 
         self.model.eval()
-
+        progress_bar = tqdm(enumerate(self.train_loader),
+                            desc=f"validating")
+        progress_bar.ncols = 100
+        
         with torch.no_grad():
-            for patches, xyzconf, global_coords, valid_mask in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
-                regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, xyzconf, valid_mask)
+            for batch_idx, batch in progress_bar:
+                patch: torch.Tensor
+                labels: torch.Tensor
+                patch = batch['image']
+                labels = batch['labels']
+                valid_mask = batch['valid_mask']
+                regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patch, labels, valid_mask)
 
-                regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patches.shape[0])
-                conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
+                regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patch.shape[0])
+                conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patch.shape[0])
                 
         regression_loss = regression_loss_tracker.get_epoch_loss()
         conf_loss = conf_loss_tracker.get_epoch_loss()
         combined_loss = regression_loss + conf_loss
         return regression_loss, conf_loss, combined_loss
-
 
     def train(self, epochs=50, save_period=0):
         csv_filepath = os.path.join(self.save_dir, "train_results.csv")
@@ -173,8 +192,10 @@ class Trainer:
         
         for epoch in range(epochs):
             train_regression_loss, train_conf_loss, train_total_loss = self._train_one_epoch(epoch)
-            val_regression_loss, val_conf_loss, val_total_loss = self._validate_one_epoch()
-            
+            if self.val_loader:
+                val_regression_loss, val_conf_loss, val_total_loss = self._validate_one_epoch()
+            else:
+                val_regression_loss, val_conf_loss, val_total_loss = 0,0,0
             
             print(f"Epoch {epoch}:")
             print(f"  Train Regression Loss: {train_regression_loss:.6f} | Val Regression Loss: {val_regression_loss:.6f}")
@@ -183,27 +204,31 @@ class Trainer:
             print("-" * 60)  # separator line for readability
 
 
-            log_metrics(epoch,
-                train_regression_loss=train_regression_loss,
-                val_regression_loss=val_regression_loss,
-                train_conf_loss=train_conf_loss,
-                val_conf_loss=val_conf_loss,
-                train_total_loss=train_total_loss,
-                val_total_loss=val_total_loss,
-                filename=csv_filepath
-            )
+            # log_metrics(epoch,
+            #     train_regression_loss=train_regression_loss,
+            #     val_regression_loss=val_regression_loss,
+            #     train_conf_loss=train_conf_loss,
+            #     val_conf_loss=val_conf_loss,
+            #     train_total_loss=train_total_loss,
+            #     val_total_loss=val_total_loss,
+            #     filename=csv_filepath
+            # )
 
             if val_total_loss < best_val_total_loss:
                 best_val_total_loss = val_total_loss
                 
                 logging.info(f"Validation accuracy improved. Saving model to {best_model_path}")
                 torch.save(self.model.state_dict(), best_model_path)
-
+                
+            if not self.val_loader:
+                logging.info(f"no val loader lol Saving model to {best_model_path}")
+                torch.save(self.model.state_dict(), best_model_path)
+                
             if save_period != 0 and (epoch + 1) % save_period == 0:
                 periodic_save_path = os.path.join(self.save_dir, f"epoch{epoch+1}.pt")
                 torch.save(self.model.state_dict(), periodic_save_path)
 
-        logger.graph_training(csv_path=csv_filepath)
+        # logger.graph_training(csv_path=csv_filepath)
 
 if __name__ == '__main__':
     fart = Trainer()
