@@ -1,144 +1,131 @@
 import torch
 from pathlib import Path
 import numpy as np
+import random
 
 class PatchTomoDataset(torch.utils.data.Dataset):
-    def __init__(self, tomo_dir_list: list[Path],  num_patches:int, mmap:bool, transform = None):
-        """_summary_
-        Args:
-            list_tuple_path_labels (list[tuple]): list of tuple of path, labels
-            
-            num_patches (int): this must be lower than total number of tomos
-            
-            transform (type) WE NEED TO USE TORCH VIDEO TRANSFORMS
+    def __init__(self, tomo_dir_list: list[Path], patches_per_batch: int = 16, transform=None):
         """
-        
+        Args:
+            tomo_dir_list (list[Path]): list of tomogram directories containing patch files
+            patches_per_batch (int): number of patches to sample per batch
+            transform: optional transforms to apply to patches
+        """
         super().__init__()
         self.tomo_dir_list = tomo_dir_list
-        self.num_patches = num_patches
-        self.mmap = mmap
+        self.patches_per_batch = patches_per_batch
         self.transform = transform
+        self._build_patch_index()
         self._determine_patch_stats()
+        self.resample_batch()  # Initialize first batch
         
+    def _build_patch_index(self):
+        """Build an index of all individual patches across all tomograms"""
+        self.patch_index = []
+        
+        for tomo_dir in self.tomo_dir_list:
+            patch_paths = [x for x in tomo_dir.iterdir() if x.is_file()]
+            for patch_path in patch_paths:
+                self.patch_index.append(patch_path)
+        
+        print(f"Found {len(self.patch_index)} total patches across {len(self.tomo_dir_list)} tomograms")
     
     def _determine_patch_stats(self):
-        #save channels and patch_size
-        #open first tomo dir open a random patch
-        test_tomo_path = self.tomo_dir_list[0]
-        test_tomo_path:Path
-        test_patch:torch.Tensor
-        test_metadata:torch.Tensor
-        
-        test_patch = None
-        for patch_path in test_tomo_path.iterdir():
-            # print(patch_path)
-            test_dict = torch.load(patch_path)
-            test_patch = test_dict['data']
+        """Determine patch statistics from the first patch"""
+        if not self.patch_index:
+            raise Exception("No patches found in the provided directories")
             
-            test_metadata = test_dict['metadata']
-            test_globalcoords = test_metadata['global_coords']
-            test_xyzconf = test_metadata['xyzconf']
-            
-            break
+        # Load first patch to get dimensions
+        test_patch_path = self.patch_index[0]
+        test_dict = torch.load(test_patch_path)
+        test_patch = test_dict['patch']
+        test_xyzconf = test_dict['labels']
+        test_globalcoords = test_dict['global_coords']
         
-        if test_patch is None:
-            print('the dataset isnt loading correctly bruh')
-            raise Exception(f'list of dirs: {self.tomo_dir_list}')
-        
-        #d,h,w OR cdhw
+        # Determine channels
         if test_patch.ndim == 3:
             self.channels = 1
         elif test_patch.ndim == 4:
             self.channels = test_patch.shape[0]
         else:
-            raise Exception(f'test_patch ndim should not be other than 3 or 4: {test_patch.ndim}')
+            raise Exception(f'test_patch ndim should be 3 or 4, got: {test_patch.ndim}')
         
-        self.patch_size = test_patch.shape[1]
-        assert int(self.patch_size ** 3) == int(torch.prod(torch.as_tensor(test_patch.shape[:]))), f'expected patch size: {self.patch_size}, shape {test_patch.shape[:]}, currently only supports patch size same for each dim'
+        # Get patch size (assuming cubic patches)
+        if test_patch.ndim == 3:
+            self.patch_size = test_patch.shape[0]  # d, h, w
+            expected_elements = self.patch_size ** 3
+        else:
+            self.patch_size = test_patch.shape[1]  # c, d, h, w
+            expected_elements = self.channels * (self.patch_size ** 3)
+            
+        actual_elements = test_patch.numel()
+        assert actual_elements == expected_elements, \
+            f'Expected {expected_elements} elements, got {actual_elements}. Shape: {test_patch.shape}'
         
-        assert test_xyzconf.ndim == 2, f'xyzconf dims wrong : {test_xyzconf.ndim}'
-        assert test_xyzconf.shape[1] == 4, f'xyzconf labels shape is wrong: {test_xyzconf.shape[1]}'
-        assert test_globalcoords.shape == (3,) or test_globalcoords.numel() == 3, f'coords wrong shape ig: {test_globalcoords.shape}'
+        # Validate labels
+        assert test_xyzconf.ndim == 2, f'xyzconf should be 2D, got: {test_xyzconf.ndim}'
+        assert test_xyzconf.shape[1] == 4, f'xyzconf should have 4 columns, got: {test_xyzconf.shape[1]}'
+        
+        # Validate global coordinates
+        assert test_globalcoords.shape == (3,) or test_globalcoords.numel() == 3, \
+            f'global_coords wrong shape: {test_globalcoords.shape}'
         
         self.max_motors = test_xyzconf.shape[0]
-        
-        
         self.patch_dtype = test_patch.dtype
-        # assert test_patch.dtype == test_xyzconf.dtype and test_xyzconf.dtype == test_globalcoords.dtype, f'dtype mismatch: patch,xyzconf,global: {test_patch.dtype}, {test_xyzconf.dtype}, {test_globalcoords.dtype} '
         
-            
-            
-        
-        
-        
+        print(f"Dataset stats:")
+        print(f"  Channels: {self.channels}")
+        print(f"  Patch size: {self.patch_size}^3")
+        print(f"  Max motors per patch: {self.max_motors}")
+        print(f"  Patch dtype: {self.patch_dtype}")
+        print(f"  Patches per batch: {self.patches_per_batch}")
+
+    def resample_batch(self):
+        """Resample a new batch of random patches"""
+        if len(self.patch_index) < self.patches_per_batch:
+            # If we have fewer patches than requested, sample with replacement
+            self.current_batch_indices = random.choices(range(len(self.patch_index)), k=self.patches_per_batch)
+        else:
+            # Sample without replacement
+            self.current_batch_indices = random.sample(range(len(self.patch_index)), self.patches_per_batch)
+
     def __len__(self):
-        return len(self.tomo_dir_list)
+        return self.patches_per_batch
 
     def __getitem__(self, idx):
-        """Returns a batch of random patches and corresponding label metadata from a tensor file."""
-        #currently random sample, stratified/tomograph aware
-        # print(type(self.__len__()))
-        # print(type(self.num_patches))
-        tomo_rand_indices = np.random.choice(self.__len__(), size = self.num_patches)
-        #(p,c,d,h,w)
-        cdhw = [self.channels, self.patch_size, self.patch_size, self.patch_size]
-        patches = torch.empty(size = (self.num_patches, *cdhw), dtype = self.patch_dtype)
-        xyzconf = torch.empty(size = (self.num_patches,self.max_motors, 4), dtype = torch.float32)
-        global_coords = torch.empty(size = (self.num_patches,3), dtype = torch.int32)
-        valid_mask = torch.empty(size = (self.num_patches,self.max_motors), dtype = torch.int32)
+        """Returns a single patch and its corresponding metadata from the current batch"""
+        if idx >= self.patches_per_batch:
+            raise IndexError(f"Index {idx} out of range for batch size {self.patches_per_batch}")
         
-        for i, rand_index in enumerate(tomo_rand_indices):
-            curr_patch:torch.Tensor
-            rand_tomo_dir:Path
-            
-            
-            rand_tomo_dir = self.tomo_dir_list[rand_index]
-            
-            patch_paths = [x for x in rand_tomo_dir.iterdir() if x.is_file()]
-            
-            num_rand_patches = len(patch_paths)
+        # Get the actual patch index from the current batch
+        actual_idx = self.current_batch_indices[idx]
+        patch_path = self.patch_index[actual_idx]
+        
+        # Load the patch file
+        file_data = torch.load(patch_path)
+        
+        patch = file_data['patch']
+        xyzconf = file_data['labels']
+        global_coords = file_data['global_coords']
+        
+        # Ensure patch has channel dimension
+        if patch.ndim == 3:
+            patch = patch.unsqueeze(0)  # Add channel dimension: (D,H,W) -> (1,D,H,W)
+        
+        # Apply transforms if provided
+        if self.transform:
+            patch = self.transform(patch)
+        
+        # Create valid mask (where confidence > 0)
+        valid_mask = (xyzconf[:, 3] > 0).bool()  # Shape: [max_motors]
+        
+        return patch, xyzconf, global_coords, valid_mask
 
-            
-            
-            rand_patch_index = np.random.choice(num_rand_patches)
-            
-            rand_patch_path = patch_paths[rand_patch_index]
-            
 
-            file = torch.load(rand_patch_path, mmap=self.mmap)
-                
-            curr_patch = file['data']
-            
-            metadata = file['metadata']
-            curr_xyzconf = metadata['xyzconf']
-            curr_global_coords = metadata['global_coords']
-            
-            if curr_patch.ndim == 3:
-                #oh we unsqueezin it
-                curr_patch = curr_patch.unsqueeze(0)
-            
-            if self.transform:
-                # print('trasnforming check our transforms work on 2d or 3d lol dont work on batches')
-                # print(curr_patch.shape)
-                curr_patch = self.transform(curr_patch)
-            # print(curr_xyzconf.shape)
-            curr_valid_mask = (curr_xyzconf[:, 3] > 0)  # Shape: [max_motors] for THIS sample only
-            valid_mask[i] = curr_valid_mask
-            patches[i] = curr_patch
-            xyzconf[i] = curr_xyzconf
-            global_coords[i] = curr_global_coords
-            
-            del file
-            # file.close()
-            #TODO:add some assertions here
-        
-        # print(type(patches))
-        return patches, xyzconf, global_coords, valid_mask
-        
 import time
 
 class ThroughputTracker:
-    def __init__(self,name:str = None, update_interval=5):
+    def __init__(self, name: str = None, update_interval=5):
         self.running_mb = 0
         self.updates = 0
         self.last_update = time.perf_counter()
@@ -147,7 +134,7 @@ class ThroughputTracker:
 
     def update(self, mb):
         self.running_mb += mb
-        self.updates +=1
+        self.updates += 1
         current_time = time.perf_counter()
         
         if current_time - self.last_update >= self.update_interval:
@@ -155,40 +142,64 @@ class ThroughputTracker:
             mb_s = self.running_mb / time_elapsed
             iters_s = self.updates / time_elapsed
             if self.name:
-                print(f'thruput tracker: {self.name}')
-            print(f'iterations/s: {iters_s:.2f}')
-            print(f'mb/s: {mb_s:.2f}')
-            print('-'*30)
+                print(f'Throughput tracker: {self.name}')
+            print(f'Iterations/s: {iters_s:.2f}')
+            print(f'MB/s: {mb_s:.2f}')
+            print('-' * 30)
             self.running_mb = 0
             self.updates = 0
             self.last_update = current_time
-            
+
 
 if __name__ == '__main__':
     from pathlib import Path
-    import utils
-    import pandas as pd
     from torch.utils.data import DataLoader
-    import time
     
-    master_tomo_path = Path.cwd() / 'normalized_pt_data/train'
+    master_tomo_path = Path.cwd() / 'patch_pt_data'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
     
-    dataset = PatchTomoDataset(tomo_dir_list = tomo_dir_list, num_patches=128, mmap=True, transform= None)
+    # Create dataset with patches_per_batch parameter
+    dataset = PatchTomoDataset(
+        tomo_dir_list=tomo_dir_list, 
+        patches_per_batch=128*128,  # Control how many patches per batch
+        transform=None
+    )
     
-    # patches, patch_origin_metadata, labels = dataset.__getitem__(idx = 0)
-    dataloader = DataLoader(dataset, batch_size = 1, shuffle = True, pin_memory= True   , num_workers=0, persistent_workers= False, prefetch_factor= None)
-     
-    main_thruput_tracker = ThroughputTracker('patch')
-    # extra_thruput_tracker = ThroughputTracker('extras')
-    # print('poopy')
+    # DataLoader will handle batching normally
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=128,  # This will batch the patches_per_batch samples
+        shuffle=True, 
+        pin_memory=True,
+        num_workers=2, 
+        persistent_workers=True, 
+        prefetch_factor=2
+    )
+    
+    main_throughput_tracker = ThroughputTracker('patch_loading')
+    
+    print(f"Dataset length: {len(dataset)}")
+    print(f"Total available patches: {len(dataset.patch_index)}")
+    print(f"Starting throughput test...")
     
     while True:
-        try:
-            for patches, labels, global_coords, valid_mask in dataloader:
-                num_bytes = patches.numel() * patches.element_size()
-                main_mb = num_bytes / 1024 / 1024
-                main_thruput_tracker.update(main_mb)
-        except StopIteration:
-            continue
-
+        for batch_idx, (patches, labels, global_coords, valid_mask) in enumerate(dataloader):
+            # patches shape: [batch_size, channels, depth, height, width]
+            # labels shape: [batch_size, max_motors, 4]
+            # global_coords shape: [batch_size, 3]
+            # valid_mask shape: [batch_size, max_motors]
+            
+            num_bytes = patches.numel() * patches.element_size()
+            main_mb = num_bytes / (1024 * 1024)
+            main_throughput_tracker.update(main_mb)
+            
+            # if batch_idx == 0:
+            #     print(f"First batch shapes:")
+            #     print(f"  Patches: {patches.shape}")
+            #     print(f"  Labels: {labels.shape}")
+            #     print(f"  Global coords: {global_coords.shape}")
+            #     print(f"  Valid mask: {valid_mask.shape}")
+        
+        # Resample for next epoch
+        dataset.resample_batch()
+        print("Resampled patches for next epoch")

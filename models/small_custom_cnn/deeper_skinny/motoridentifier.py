@@ -8,6 +8,9 @@ from itertools import product
 from torchio import GridSampler, GridAggregator
 import torchio as tio
 
+
+
+
 class MotorIdentifier(nn.Module):
     
     def __init__(self,max_motors:int):
@@ -15,15 +18,22 @@ class MotorIdentifier(nn.Module):
         super().__init__()
 
         
-        features_out_channels = 128
+        features_out_channels = 256
         self.features = nn.Sequential(
             #stem
             nn.Conv3d(in_channels=1, out_channels= 16, kernel_size= 3, stride = 1, padding = 1, bias = False),
             #blocks
+            # nnblock.PreActResBlock3d(in_channels=16, out_channels=16),#32
+            # nnblock.PreActResBlock3d(in_channels=32, out_channels=32),
             nnblock.PreActResBlock3d(in_channels=16, out_channels=32, stride = 2),#32
+            # nnblock.PreActResBlock3d(in_channels=64, out_channels=64),#16
             nnblock.PreActResBlock3d(in_channels=32, out_channels=64, stride = 2),#16
-            nnblock.PreActResBlock3d(in_channels=64, out_channels=96, stride = 2),#8
-            nnblock.PreActResBlock3d(in_channels=96, out_channels=features_out_channels, stride = 2),#4
+            # nnblock.PreActResBlock3d(in_channels=96, out_channels=96),#16
+            nnblock.PreActResBlock3d(in_channels=64, out_channels=128, stride = 2),#8
+            # nnblock.PreActResBlock3d(in_channels=192, out_channels=192),#8
+            nnblock.PreActResBlock3d(in_channels=128, out_channels=features_out_channels, stride = 2),#4
+            # nnblock.PreActResBlock3d(in_channels=features_out_channels, out_channels=features_out_channels),#4
+
         )
         
         
@@ -31,7 +41,7 @@ class MotorIdentifier(nn.Module):
         #these are basic blocks not preact so no need to apply activations after
         feature_map_size = 4**3
         linear_channels = features_out_channels * feature_map_size
-        i_lin_channels = 512
+        i_lin_channels = 384
         self.intermediate = nn.Sequential(
             nn.BatchNorm3d(features_out_channels),
             nn.SiLU(inplace= True),
@@ -39,44 +49,24 @@ class MotorIdentifier(nn.Module):
             nn.Dropout3d(p = 0.05, inplace=True),
             # nn.AdaptiveAvgPool3d(output_size = (1, 1, 1)),
             nn.Flatten(),
-            
 
-            
         )
         
 
         self.regression_head = nn.Sequential(
-            nn.Linear(linear_channels,i_lin_channels),
-            nn.SiLU(inplace= True),
-            nn.Dropout(p = 0.1, inplace=True),
-            
-            nn.Linear(i_lin_channels,i_lin_channels),
-            nn.SiLU(inplace= True),
-            nn.Dropout(p = 0.1, inplace=True),
-            
-            nn.Linear(i_lin_channels,i_lin_channels),
-            nn.SiLU(inplace= True),
-            nn.Dropout(p = 0.1, inplace=True),
-            
+            nnblock.BasicFCBlock(in_features=linear_channels, out_features= i_lin_channels*2, p = 0.1),
+            nnblock.BasicFCBlock(in_features=i_lin_channels*2, out_features= i_lin_channels, p = 0.1),
+            # nnblock.BasicFCBlock(in_features=i_lin_channels, out_features= i_lin_channels, p = 0.1),
             #outputs a 3d point in space (use mse or something similar)
             nn.Linear(i_lin_channels, max_motors * 3)
         )
         
         self.classification_head = nn.Sequential(
-            nn.Linear(linear_channels,i_lin_channels),
-            nn.SiLU(inplace= True),
-            nn.Dropout(p = 0.1, inplace=True),
-            
-            nn.Linear(i_lin_channels,i_lin_channels),
-            nn.SiLU(inplace= True),
-            nn.Dropout(p = 0.1, inplace=True),
-            #outputs conf logits? bce
+            # nnblock.BasicFCBlock(in_features=linear_channels, out_features= i_lin_channels, p = 0.1),
+            nnblock.BasicFCBlock(in_features=linear_channels, out_features= i_lin_channels, p = 0.1),
             nn.Linear(i_lin_channels,max_motors * 1)
-            #use sigmoid function later on in forward
         )
-        
-        #in model.predict we can handle the (-1,-1,-1) output
-    
+
     def forward(self,x):
         """
 
@@ -89,13 +79,18 @@ class MotorIdentifier(nn.Module):
         """
         
         x = self.features(x)
+        # print('here1'*10)
         x = self.intermediate(x)
+        # print('here2'*10)
         # x = x.view(x.size(0), -1)
         points = self.regression_head(x)
+        # print('here3'*10)
         #points sahpe (b,max_motors,3), conf (b,max_motors)
         points = points.view(-1, self.max_motors, 3)
+        # print('here4'*10)
         # points = points.view(-1, self.max_motors, 3).sigmoid() * patch_size  # Constrained to [0,64]
         conf_logits = self.classification_head(x)
+        # print('here5'*10)
         
         # Combine along feature dimension
         outputs = torch.cat([points, conf_logits.unsqueeze(-1)], dim=-1)
@@ -121,6 +116,7 @@ class MotorIdentifier(nn.Module):
             #for torch we can use the tio.CONSTANTS or just key accessing
 
             patch_data = patch['image'][tio.DATA].unsqueeze(0)
+            # print(patch_data.shape)
             origin = torch.tensor(patch[tio.LOCATION][:3]).to(torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
             
             output = self._patch_inference(patch_data, conf_threshold)

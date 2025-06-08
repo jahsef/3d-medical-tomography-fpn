@@ -1,7 +1,22 @@
 import torch.nn as nn
 
 
-
+class BasicFCBlock(nn.Module):
+    def __init__(self, in_features, out_features, p):
+        
+        """fc, bn, silu, dropout"""
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Linear(in_features,out_features),
+            nn.BatchNorm1d(out_features),
+            nn.SiLU(inplace= True),
+            nn.Dropout(p = p, inplace=True),
+        )
+        
+    def forward(self,x):
+        return self.block(x)
+        
+        
 class PreActResBlock2d(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()

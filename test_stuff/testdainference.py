@@ -10,6 +10,7 @@ import time
 device = torch.device('cuda')
 model = MotorIdentifier(max_motors=1).to(device)
 model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\small_custom_cnn\deeper_skinny\best.pt'))
+model.eval()
 tomo_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\normalized_val_fulltomo\tomo_49725c.pt'
 
 tomo = torch.load(tomo_path)
@@ -20,7 +21,7 @@ print(tomo.dtype)
 print(tomo.shape)
 
 start = time.perf_counter()
-results = model.inference(tomo, patch_size= 64, overlap = 0, conf_threshold= 0.7)
+results = model.inference(tomo, patch_size= 64, overlap = 32, conf_threshold= 0.73)
 
 end = time.perf_counter()
 
@@ -32,3 +33,4 @@ else:
     print(results.shape)
 
     print(results)
+    results.sort()
