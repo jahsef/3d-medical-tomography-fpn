@@ -106,9 +106,9 @@ if __name__ == "__main__":
     train_transform = monai.transforms.Compose([
         transforms.RandGaussianNoised(keys = 'image' ,dtype = torch.float16, prob = 0.5, std = 0.01),
         transforms.RandShiftIntensityd(keys = 'image', offsets = 0.1,safe = True, prob = 0.50, ),
-        # transforms.RandRotate90d(keys=["image", "label"], prob=0.5),
-        # transforms.SpatialPadd(keys = ['image', 'label'], spatial_size= [66,66,66], mode = 'reflect'),
-        # transforms.RandSpatialCropd(keys = ['image', 'label'], roi_size = [64,64,64], random_center=True)
+        transforms.RandRotate90d(keys=["image", "label"], prob=0.5),
+        transforms.SpatialPadd(keys = ['image', 'label'], spatial_size= [66,66,66], mode = 'reflect'),
+        transforms.RandSpatialCropd(keys = ['image', 'label'], roi_size = [64,64,64], random_center=True)
     ])
     
     #TODO visualization/logging
@@ -128,15 +128,15 @@ if __name__ == "__main__":
     
     model = MotorIdentifier(max_motors=max_motors)
     print('loading state dict into model\n'*20)
-    model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\point_regression\testing\loss_10_0.2.pt'))
+    model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\point_regression\testing\loss_3.43_0.028.pt'))
 
     master_tomo_path = Path.cwd() / 'patch_pt_data'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
-    tomo_dir_list = tomo_dir_list[:len(tomo_dir_list)]
+    tomo_dir_list = tomo_dir_list[:len(tomo_dir_list)//24]
     # train_set, val_set = train_test_split(tomo_dir_list, train_size= 0.9, test_size= 0.1, random_state= 42)
 
     batch_size = 96
-    batches_per_step = 1 #for gradient accumulation (every n batches we step)
+    batches_per_step = 4 #for gradient accumulation (every n batches we step)
     train_dataset = PatchTomoDataset(tomo_dir_list,patches_per_batch = batch_size * 256, transform= train_transform)
     val_dataset = PatchTomoDataset(tomo_dir_list[:1], transform= None)
 
@@ -174,7 +174,7 @@ if __name__ == "__main__":
 
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps= warmup_steps, total_steps= total_steps)
     
-    save_dir = './models/point_regression/only_intensity/'
+    save_dir = './models/point_regression/stronger_augmentation/'
 
     os.makedirs(save_dir, exist_ok= True)
 

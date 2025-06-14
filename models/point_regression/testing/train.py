@@ -1,11 +1,12 @@
+import monai.transforms
 import torch.nn.backends
 import torchvision
 # import torchvision.transforms as transforms
-import torchvision.transforms.v2 as t
+# import torchvision.transforms.v2 as t
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import torchvision.transforms
+# import torchvision.transforms
 from torchvision.ops import sigmoid_focal_loss
 from trainer import Trainer
 import time
@@ -29,9 +30,9 @@ from natsort import natsorted
 import imageio.v3 as iio
 import numpy as np
 
-import torchio as tio
-from torch.optim.lr_scheduler import LambdaLR
-from torch.optim.lr_scheduler import ChainedScheduler
+# import torchio as tio
+import monai
+from monai import transforms
 
 
 def write_tomos(list_val_paths):
@@ -81,22 +82,35 @@ def write_tomos(list_val_paths):
 
 import torch.nn.functional as F
 
-class FocalLoss(nn.Module):
+# class FocalLoss(nn.Module):
     
-    def __init__(self, alpha=0.25, gamma=2.0):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
+#     def __init__(self, alpha=0.25, gamma=2.0):
+#         super().__init__()
+#         self.alpha = alpha
+#         self.gamma = gamma
         
-    def forward(self, inputs, targets):
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
-        return focal_loss.mean()
+#     def forward(self, inputs, targets):
+#         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+#         pt = torch.exp(-bce_loss)
+#         focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
+#         return focal_loss.mean()
     
 if __name__ == "__main__":
+    
     train_transform = None
-
+    # intensity
+    # rotation
+    # scale
+    # spatial
+    
+    train_transform = monai.transforms.Compose([
+        transforms.RandGaussianNoised(keys = 'image' ,dtype = torch.float16, prob = 0.5, std = 0.01),
+        transforms.RandShiftIntensityd(keys = 'image', offsets = 0.1,safe = True, prob = 0.50, ),
+        transforms.RandRotate90d(keys=["image", "label"], prob=0.5),
+        # transforms.SpatialPadd(keys = ['image', 'label'], spatial_size= [72,72,72], mode = 'reflect'),
+        # transforms.RandSpatialCropd(keys = ['image', 'label'], roi_size = [64,64,64], random_center=True)
+    ])
+    
     #TODO visualization/logging
     #log f1 beta weighted stuff with precision + recall too
     #plot lr vs epoch
@@ -111,39 +125,40 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     max_motors = 1#max motors must be the same as our labels
-    batch_size = 96
+    
     model = MotorIdentifier(max_motors=max_motors)
+    print('loading state dict into model\n'*20)
+    model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\point_regression\testing\loss_4.5_0.036.pt'))
 
     master_tomo_path = Path.cwd() / 'patch_pt_data'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
-    # tomo_dir_list = tomo_dir_list[:len(tomo_dir_list)//10]
+    tomo_dir_list = tomo_dir_list[:len(tomo_dir_list)]
     # train_set, val_set = train_test_split(tomo_dir_list, train_size= 0.9, test_size= 0.1, random_state= 42)
-    
-    patch_training = True
-    # num_patches = 96
-    train_dataset = PatchTomoDataset(tomo_dir_list,patches_per_batch = 96 * 512, transform= train_transform)
-    val_dataset = PatchTomoDataset(tomo_dir_list[:2], transform= None)
+
+    batch_size = 96
+    batches_per_step = 4 #for gradient accumulation (every n batches we step)
+    train_dataset = PatchTomoDataset(tomo_dir_list,patches_per_batch = batch_size * 256, transform= train_transform)
+    val_dataset = PatchTomoDataset(tomo_dir_list[:1], transform= None)
     
     pin_memory = True
-    num_workers = 3
+    num_workers = 6
     persistent_workers = True
     prefetch_factor = 1
     
     train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True, pin_memory =pin_memory, num_workers=num_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
 
     val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle = False, pin_memory =pin_memory, num_workers=num_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
-
+    #regression loss with all false labels results in nan
+    #setting regression loss to 0 in that case
     regression_loss_fn = torch.nn.SmoothL1Loss(beta = 1)#lower beta = more robust to outliers
-    pos_weight = torch.tensor([5e-5]).to(device)
+    pos_weight = torch.tensor([1e-4]).to(device)
     conf_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     # conf_loss_fn = FocalLoss(alpha = 0.01, gamma = 2)#alpha is pos weight, gamma is focusing param
-
-    epochs = 50
+    
+    epochs = 25
     steps_per_epoch = len(train_loader)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = int(0.1 * total_steps)#% of steps warmup, 5% is about 2 epochs
-    
-    batches_per_step = 3 #for gradient accumulation (every n batches we step)
+    warmup_steps = int(0.05 * total_steps)#% of steps warmup, 5% is about 2 epochs
     
     def get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps):
         import math
@@ -155,11 +170,11 @@ if __name__ == "__main__":
         
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
-    optimizer = torch.optim.AdamW(model.parameters(), lr = 5e-3, weight_decay= 1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-4, weight_decay= 1e-4)
 
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps= warmup_steps, total_steps= total_steps)
     
-    save_dir = './models/small_custom_cnn/deeper_skinny/'
+    save_dir = './models/point_regression/testing/'
 
     os.makedirs(save_dir, exist_ok= True)
 
@@ -168,7 +183,6 @@ if __name__ == "__main__":
     trainer = Trainer(
         model=model,
         batches_per_step = batches_per_step,
-        patch_training=patch_training,
         train_loader=train_loader,
         val_loader=val_loader,
         optimizer=optimizer,

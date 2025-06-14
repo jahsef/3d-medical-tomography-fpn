@@ -89,6 +89,8 @@ class PatchTomoDataset(torch.utils.data.Dataset):
             # Sample without replacement
             self.current_batch_indices = random.sample(range(len(self.patch_index)), self.patches_per_batch)
 
+
+
     def __len__(self):
         return self.patches_per_batch
 
@@ -105,21 +107,54 @@ class PatchTomoDataset(torch.utils.data.Dataset):
         file_data = torch.load(patch_path)
         
         patch = file_data['patch']
-        xyzconf = file_data['labels']
+        sparse_labels = file_data['labels'].to(torch.float32)
         global_coords = file_data['global_coords']
         
         # Ensure patch has channel dimension
         if patch.ndim == 3:
             patch = patch.unsqueeze(0)  # Add channel dimension: (D,H,W) -> (1,D,H,W)
+
+
         
-        # Apply transforms if provided
+        
         if self.transform:
-            patch = self.transform(patch)
+            #something is wrong with my dense label stuff 99% sure
+            # spatial_dims = patch.shape[1:] # (D, H, W)
+            
+            dense_labels = torch.zeros(size=patch.shape, dtype=torch.float32)
+            
+            valid_motor = sparse_labels[sparse_labels[:,3] > 0]
+            
+            if valid_motor.numel() > 0:
+                x,y,z = valid_motor[0,:3].to(torch.int32)#ignoring motors > 1 since im not gonna deal with that in the future anyways
+                dense_labels[0, x,y,z] = 1.0
+            
+            monai_dict = {
+                
+                'image' : patch, #vector <1,2,3> -> [1,3], [c,d,h,w] -> 1 x 64 x 64 x 64
+                'label' : dense_labels #1x64x64x64
+                #coords x,y,z,  1x3
+            }
+            
+            monai_dict = self.transform(monai_dict)
+            patch = monai_dict['image']
+            dense_labels = monai_dict['label']
+            
+            coords = torch.nonzero(dense_labels).to(torch.float32)#returns bool mask
+            # print(coords.shape)
+            if coords.numel() > 0:
+                # print(f'original labels: {sparse_labels[0,:3]}')
+                # print(f'transformed coords: {coords[0, 1:]}')
+                # assert torch.allclose(sparse_labels[0,:3], coords[0, 1:])
+                sparse_labels[0, :3] = coords[0, 1:]#since dense mask is c,d,h,w we need to slice out the channel dim
+            #1x3
+            
+            #global coords should remain the same i think?
         
-        # Create valid mask (where confidence > 0)
-        valid_mask = (xyzconf[:, 3] > 0).bool()  # Shape: [max_motors]
-        
-        return patch, xyzconf, global_coords, valid_mask
+        #should handle valid mask in trainer script later on
+        #then we can modify this to support dict based transforms
+        # print(f'patch tomo dataset labels shape: {labels.shape}')
+        return patch, sparse_labels, global_coords
 
 
 import time

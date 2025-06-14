@@ -374,13 +374,14 @@ if __name__ == '__main__':
     # Parameters
     p = 64
     s = p // 4  # 16 pixel stride
+    
     patch_size = (p, p, p)
     stride = (s, s, s)
     workers = 4  # Start with 1 for debugging
 
     # Sampling parameters
     positive_keep_fraction = 1.0  # Keep all positive patches
-    global_negative_keep_fraction = 0.003  # 0.2% of all negative patches globally
+    global_negative_keep_fraction = 0.01  # 1% of all negative patches globally
     min_negative_samples = 200  # Minimum negative samples per tomogram
     
     global_max_motors = 20
@@ -392,22 +393,26 @@ if __name__ == '__main__':
     print(f"Minimum negative samples per tomogram: {min_negative_samples}")
     
     # Run the extraction
-    write_whole_directory(
-        src=src_root,
-        dst=dst_root,
-        patch_size=patch_size,
-        stride=stride,
-        csv_path=csv_path,
-        positive_keep_fraction=positive_keep_fraction,
-        global_negative_keep_fraction=global_negative_keep_fraction,
-        min_negative_samples=min_negative_samples,
-        global_max_motors=global_max_motors,
-        patch_max_motors=patch_max_motors,
-        max_processes=workers
-    )
+    # write_whole_directory(
+    #     src=src_root,
+    #     dst=dst_root,
+    #     patch_size=patch_size,
+    #     stride=stride,
+    #     csv_path=csv_path,
+    #     positive_keep_fraction=positive_keep_fraction,
+    #     global_negative_keep_fraction=global_negative_keep_fraction,
+    #     min_negative_samples=min_negative_samples,
+    #     global_max_motors=global_max_motors,
+    #     patch_max_motors=patch_max_motors,
+    #     max_processes=workers
+    # )
     
-    # Clean up empty directories
-    prune_empty_dirs(dst_root)
+    # # Clean up empty directories
+    # prune_empty_dirs(dst_root)
     
     # Analyze the final dataset balance
     analyze_dataset_balance(dst_root)
+    # Dataset Statistics:
+    # Total patches: 517124
+    # Positive patches: 26918 (5.2%)
+    # Negative patches: 490206 (94.8%)

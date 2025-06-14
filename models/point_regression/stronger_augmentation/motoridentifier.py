@@ -100,7 +100,7 @@ class MotorIdentifier(nn.Module):
         dataset = tio.SubjectsDataset([subject])
         sampler = GridSampler(dataset[0], patch_size, overlap)
         loader = tio.SubjectsLoader(sampler, batch_size=batch_size)
-        print(f'patches for inference: {len(sampler)}')
+        
         outputs = []
         for batch in loader:
             images = batch['image'][tio.DATA].to('cuda', non_blocking=True)

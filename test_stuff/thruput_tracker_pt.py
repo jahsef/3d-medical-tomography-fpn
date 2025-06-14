@@ -28,12 +28,25 @@ class ThroughputTracker:
             self.updates = 0
             self.last_update = current_time
 
-def load_patch_data(tomo_dir, patch_id):
-    """Load pt file for a given patch_id"""
-    patch_path = tomo_dir / f'{patch_id}.pt'
-    return torch.load(patch_path)
-
+# def load_patch_data(tomo_dir, patch_id):
+#     """Load pt file for a given patch_id"""
+#     patch_path = tomo_dir / f'{patch_id}.pt'
+#     return torch.load(patch_path)
+class poopset(torch.utils.data.Dataset):
+    def __init__(self, list):
+        super().__init__()
+        self.list = list
+    
+    def __len__(self):
+        return len(self.list)
+    
+    def __getitem__(self, index):
+        patch_path = self.list[index]
+        patch_file = torch.load(patch_path)
+        return patch_file
+    
 def main():
+    import torch
     master_dir = Path.cwd() / 'patch_pt_data'
     assert master_dir.exists()
     
@@ -45,16 +58,23 @@ def main():
     for tomo_dir in tomo_dirs:
         patch_files = list(tomo_dir.glob('*.pt'))
         for patch_file in patch_files:
-            all_patches.append((tomo_dir, patch_file.stem))
+            all_patches.append(Path(tomo_dir) / patch_file)
     
     tracker = ThroughputTracker('pt_patch_loader', update_interval=1)
+
+        
+    dataset = poopset(all_patches)
+    print(len(dataset))
+    loader = torch.utils.data.DataLoader(dataset=dataset, batch_size=64)#, persistent_workers=True, num_workers=1, pin_memory=True)
     
     while True:
-        for tomo_dir, patch_id in all_patches:
-            data_dict = load_patch_data(tomo_dir, patch_id)
-            patches = data_dict['patch']
-            coords = data_dict['global_coords']
-            labels = data_dict['labels']
+        for batch in loader:
+            # data_dict = load_patch_data(tomo_dir, patch_id)
+            
+            patches = batch['patch']
+            # print(patches.shape)
+            coords = batch['global_coords']
+            labels = batch['labels']
             total_mb = (patches.numel() * patches.element_size() + coords.numel() * coords.element_size() + labels.numel() * labels.element_size()) / (1024 * 1024)
             tracker.update(total_mb)
 

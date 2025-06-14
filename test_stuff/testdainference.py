@@ -9,7 +9,7 @@ import time
 
 device = torch.device('cuda')
 model = MotorIdentifier(max_motors=1).to(device)
-model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\small_custom_cnn\deeper_skinny\best.pt'))
+model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\point_regression\only_intensity\best.pt'))
 model.eval()
 tomo_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\normalized_val_fulltomo\tomo_49725c.pt'
 
@@ -21,16 +21,31 @@ print(tomo.dtype)
 print(tomo.shape)
 
 start = time.perf_counter()
-results = model.inference(tomo, patch_size= 64, overlap = 32, conf_threshold= 0.73)
+results = model.inference(tomo, patch_size= 64, overlap = 40, conf_threshold= 0.25, batch_size= 160)
 
 end = time.perf_counter()
 
-
 print(f'runtime: {end - start}')
+
 if results is None:
     print('results none')
 else:
     print(results.shape)
-
-    print(results)
-    results.sort()
+    
+    while True:
+        try:
+            conf_threshold = float(input("Enter confidence threshold: "))
+            
+            # Filter by confidence threshold
+            filtered = results[results[:, 3] >= conf_threshold]
+            
+            # Sort by confidence (descending)
+            sorted_indices = filtered[:, 3].argsort()
+            filtered = filtered[torch.flip(sorted_indices, [0])]
+            
+            print(f"\nResults with conf >= {conf_threshold}:")
+            print(filtered)
+            print(f"Found {len(filtered)} detections")
+            
+        except KeyboardInterrupt:
+            break

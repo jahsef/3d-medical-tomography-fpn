@@ -86,8 +86,15 @@ class F1ScoreTracker:
         self.beta = beta
         
         pass
-    def update(self, batch_size, predictions, ground_truth):
+    def update(self, predictions, ground_truth):
+        """_summary_
+
+        Args:
+            predictions (_type_): _description_
+            ground_truth (_type_): (n,3) 
+        """
         #have to write this lmao
+        
         pass
         
   
