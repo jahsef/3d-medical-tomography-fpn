@@ -1,10 +1,8 @@
+from pathlib import Path
 
 
+path_str = "WindowsPath('C:/Users/kevin/Documents/GitHub/kaggle-byu-bacteria-motor-comp/patch_pt_data/tomo_003acc')"
+actual_path = path_str.split("'")[1]
 
-
-
-
-#loop all tomo dirs
-#loop thru all patch ids of tomo dirs
-#create a csv entry with tomo_id, patch_id, bool using the labels array
-#save
+path_obj = Path(actual_path)
+print(path_obj)

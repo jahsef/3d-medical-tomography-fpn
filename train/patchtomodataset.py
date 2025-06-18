@@ -2,159 +2,164 @@ import torch
 from pathlib import Path
 import numpy as np
 import random
+import pandas as pd
+import pathlib
 
 class PatchTomoDataset(torch.utils.data.Dataset):
-    def __init__(self, tomo_dir_list: list[Path], patches_per_batch: int = 16, transform=None):
+    def __init__(self, sigma:float,patch_index_path: Path, transform=None, tomo_id_list: list[str] = None):
         """
         Args:
-            tomo_dir_list (list[Path]): list of tomogram directories containing patch files
+            patch_index_path (Path): self explanatory
             patches_per_batch (int): number of patches to sample per batch
             transform: optional transforms to apply to patches
+            sigma: gaussian std dev for labels (idk is good i think)
+            tomo_id_list: list of tomograms(SHOULD BE TOMO IDS ONLY) we want to be in our patch based dataset 
         """
         super().__init__()
-        self.tomo_dir_list = tomo_dir_list
-        self.patches_per_batch = patches_per_batch
-        self.transform = transform
-        self._build_patch_index()
-        self._determine_patch_stats()
-        self.resample_batch()  # Initialize first batch
+        self.dataset_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\patch_pt_data')
+        self.index_df = pd.read_csv(patch_index_path)
         
-    def _build_patch_index(self):
-        """Build an index of all individual patches across all tomograms"""
-        self.patch_index = []
-        
-        for tomo_dir in self.tomo_dir_list:
-            patch_paths = [x for x in tomo_dir.iterdir() if x.is_file()]
-            for patch_path in patch_paths:
-                self.patch_index.append(patch_path)
-        
-        print(f"Found {len(self.patch_index)} total patches across {len(self.tomo_dir_list)} tomograms")
+        if tomo_id_list is not None:
+            bool_mask = self.index_df["tomo_id"].isin(tomo_id_list)
+            self.index_df = self.index_df[bool_mask]
     
-    def _determine_patch_stats(self):
-        """Determine patch statistics from the first patch"""
-        if not self.patch_index:
-            raise Exception("No patches found in the provided directories")
             
-        # Load first patch to get dimensions
-        test_patch_path = self.patch_index[0]
-        test_dict = torch.load(test_patch_path)
-        test_patch = test_dict['patch']
-        test_xyzconf = test_dict['labels']
-        test_globalcoords = test_dict['global_coords']
         
-        # Determine channels
-        if test_patch.ndim == 3:
-            self.channels = 1
-        elif test_patch.ndim == 4:
-            self.channels = test_patch.shape[0]
-        else:
-            raise Exception(f'test_patch ndim should be 3 or 4, got: {test_patch.ndim}')
+        class_labels = np.array(self.index_df['has_motor'])
+        positive_indices = np.where(class_labels == 1)[0]  # Assuming 1 = positive class
+        negative_indices = np.where(class_labels == 0)[0]  # Assuming 0 = negative class
         
-        # Get patch size (assuming cubic patches)
-        if test_patch.ndim == 3:
-            self.patch_size = test_patch.shape[0]  # d, h, w
-            expected_elements = self.patch_size ** 3
-        else:
-            self.patch_size = test_patch.shape[1]  # c, d, h, w
-            expected_elements = self.channels * (self.patch_size ** 3)
-            
-        actual_elements = test_patch.numel()
-        assert actual_elements == expected_elements, \
-            f'Expected {expected_elements} elements, got {actual_elements}. Shape: {test_patch.shape}'
+        print(f"Dataset: {len(positive_indices)} positive, {len(negative_indices)} negative")
         
-        # Validate labels
-        assert test_xyzconf.ndim == 2, f'xyzconf should be 2D, got: {test_xyzconf.ndim}'
-        assert test_xyzconf.shape[1] == 4, f'xyzconf should have 4 columns, got: {test_xyzconf.shape[1]}'
+        self.transform = transform
+        self.sigma = sigma
+        # self._resample_batch()
         
-        # Validate global coordinates
-        assert test_globalcoords.shape == (3,) or test_globalcoords.numel() == 3, \
-            f'global_coords wrong shape: {test_globalcoords.shape}'
         
-        self.max_motors = test_xyzconf.shape[0]
-        self.patch_dtype = test_patch.dtype
-        
-        print(f"Dataset stats:")
-        print(f"  Channels: {self.channels}")
-        print(f"  Patch size: {self.patch_size}^3")
-        print(f"  Max motors per patch: {self.max_motors}")
-        print(f"  Patch dtype: {self.patch_dtype}")
-        print(f"  Patches per batch: {self.patches_per_batch}")
+        #define gaussian blobs?
 
-    def resample_batch(self):
-        """Resample a new batch of random patches"""
-        if len(self.patch_index) < self.patches_per_batch:
-            # If we have fewer patches than requested, sample with replacement
-            self.current_batch_indices = random.choices(range(len(self.patch_index)), k=self.patches_per_batch)
-        else:
-            # Sample without replacement
-            self.current_batch_indices = random.sample(range(len(self.patch_index)), self.patches_per_batch)
-
-
-
+        #sigma std of 2 is fine for my usecase maybe 1.5-3 would work idk
+        
+        
     def __len__(self):
-        return self.patches_per_batch
+        return len(self.index_df)
 
     def __getitem__(self, idx):
         """Returns a single patch and its corresponding metadata from the current batch"""
-        if idx >= self.patches_per_batch:
-            raise IndexError(f"Index {idx} out of range for batch size {self.patches_per_batch}")
+        #we want to just index a list or something similar that we get from the random indices
         
-        # Get the actual patch index from the current batch
-        actual_idx = self.current_batch_indices[idx]
-        patch_path = self.patch_index[actual_idx]
+        row = self.index_df.iloc[idx]
+        patch_path = self.dataset_path / row['tomo_id'] / row['patch_id'] #patch_id already has .pt
+        assert type(patch_path) is pathlib.WindowsPath, type(patch_path)
         
-        # Load the patch file
-        file_data = torch.load(patch_path)
+        patch_dict = torch.load(patch_path)
         
-        patch = file_data['patch']
-        sparse_labels = file_data['labels'].to(torch.float32)
-        global_coords = file_data['global_coords']
+        patch = patch_dict['patch']
+        sparse_label = patch_dict['labels']
+        global_coords = patch_dict['global_coords']
         
-        # Ensure patch has channel dimension
         if patch.ndim == 3:
-            patch = patch.unsqueeze(0)  # Add channel dimension: (D,H,W) -> (1,D,H,W)
+            # print('unsqueezing')
+            patch = patch.unsqueeze(0)
+            
+        if sparse_label[0,3] == 1:#if valid motor
+            #gaussian blobbing function here
+            label_x, label_y, label_z = map(int,sparse_label[0, :3])
+            
+            x,y,z = torch.arange(end = patch.shape[1]),torch.arange(end = patch.shape[2]),torch.arange(end = patch.shape[3])
+            
+            grid_x, grid_y, grid_z = torch.meshgrid(x,y,z, indexing = 'ij')
+            # print('positive')
+            dense_label = torch.exp( -((grid_x-label_x)**2 + (grid_y-label_y)**2 + (grid_z-label_z)**2) / (2 * (self.sigma**2))).to(torch.float16).unsqueeze(0)
+            
+            
+            
+            
+            
+
+                        
+            # print(dense_label)
+            
+            if False:
+                import matplotlib.pyplot as plt
+
+                
+                max_idx = torch.argmax(dense_label)
+                
+                c,d,h,w = torch.unravel_index(max_idx, dense_label.shape)#0,n,n,n?
+                # print(f'dhw: {d}, {h}, {w}')
+                #unravel returns n_dim # of tensors, each column of tensor corresponding to an index of input array
+                #each tensor represents the index of 1 dim
+                #d,h,w should only have 1 output in this case
+                coords = torch.tensor([d.item(),h.item(),w.item()], dtype = torch.int32)
+
+                print(f'coords: {coords}')
+                print(f'sparse_label: {sparse_label[0, :3]}')
+                print(f"tomo: {row['tomo_id']}")
+                print(f"global coords of label: {sparse_label[0, :3] + patch_dict['global_coords']}")
+                
+                # print(coords)
+                
+                assert torch.allclose(sparse_label[0, :3], coords), f'{sparse_label[0, :3]}, {coords}'
+                # print(f"Patch shape: {patch.shape}")
+                # print(f"Sparse label coords: {sparse_label[0, :3]}")
+                # print(f"Coordinate ranges - D: {sparse_label[0, 0]}, H: {sparse_label[0, 1]}, W: {sparse_label[0, 2]}")
+                bool = torch.all(sparse_label[0, :3] >= 0) and torch.all(sparse_label[0, :3] < 64)
+                # print(f"Are coords in valid range (0-63)? {bool}")
+                if not bool:
+                    raise Exception("BRUH NOT TRUE")
+                
+                
+                if False:
+                    motor_z = int(sparse_label[0, 0]) 
+                    plt.figure(figsize=(12, 4))
+                    
+                    plt.subplot(1, 3, 1)
+                    plt.imshow(patch[0, motor_z].cpu(), cmap='gray')
+                    plt.title(f'Raw patch at depth {motor_z}')
+                    plt.plot(sparse_label[0, 2], sparse_label[0, 1], 'ro', markersize=8)
+                    
+                    plt.subplot(1, 3, 2)
+                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='plasma')
+                    plt.title(f'Heatmap at depth {motor_z}')
+                    
+                    plt.subplot(1, 3, 3)
+                    # Overlay
+                    plt.imshow(patch[0, motor_z].cpu(), cmap='gray', alpha=0.7)
+                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='plasma', alpha=0.3)
+                    plt.title('Overlay')
+                    
+                    plt.tight_layout()
+                    plt.show()
 
 
+            
+        else:
+            # print('negative')
+            
+            dense_label = torch.zeros(size = patch.shape, dtype = torch.float16)
         
+
         
         if self.transform:
-            #something is wrong with my dense label stuff 99% sure
-            # spatial_dims = patch.shape[1:] # (D, H, W)
-            
-            dense_labels = torch.zeros(size=patch.shape, dtype=torch.float32)
-            
-            valid_motor = sparse_labels[sparse_labels[:,3] > 0]
-            
-            if valid_motor.numel() > 0:
-                x,y,z = valid_motor[0,:3].to(torch.int32)#ignoring motors > 1 since im not gonna deal with that in the future anyways
-                dense_labels[0, x,y,z] = 1.0
-            
-            monai_dict = {
-                
-                'image' : patch, #vector <1,2,3> -> [1,3], [c,d,h,w] -> 1 x 64 x 64 x 64
-                'label' : dense_labels #1x64x64x64
-                #coords x,y,z,  1x3
+            dict = {
+                'patch':patch,
+                'label':dense_label,
             }
-            
-            monai_dict = self.transform(monai_dict)
-            patch = monai_dict['image']
-            dense_labels = monai_dict['label']
-            
-            coords = torch.nonzero(dense_labels).to(torch.float32)#returns bool mask
-            # print(coords.shape)
-            if coords.numel() > 0:
-                # print(f'original labels: {sparse_labels[0,:3]}')
-                # print(f'transformed coords: {coords[0, 1:]}')
-                # assert torch.allclose(sparse_labels[0,:3], coords[0, 1:])
-                sparse_labels[0, :3] = coords[0, 1:]#since dense mask is c,d,h,w we need to slice out the channel dim
-            #1x3
-            
-            #global coords should remain the same i think?
+            dict = self.transform(dict)
+            patch = dict['patch']
+            dense_label = dict['label']
         
-        #should handle valid mask in trainer script later on
-        #then we can modify this to support dict based transforms
-        # print(f'patch tomo dataset labels shape: {labels.shape}')
-        return patch, sparse_labels, global_coords
+        # if idx == self.patches_per_batch-1:
+        #     self._resample_batch()
+        
+        
+        # print(patch.shape)
+        
+        # print(dense_label.shape)
+        # print('-----')
+        return patch, dense_label, global_coords
+
 
 
 import time
@@ -195,9 +200,9 @@ if __name__ == '__main__':
     
     # Create dataset with patches_per_batch parameter
     dataset = PatchTomoDataset(
-        tomo_dir_list=tomo_dir_list, 
-        patches_per_batch=128*128,  # Control how many patches per batch
-        transform=None
+        sigma=16,
+        patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
+        transform = None,
     )
     
     # DataLoader will handle batching normally
@@ -206,27 +211,35 @@ if __name__ == '__main__':
         batch_size=128,  # This will batch the patches_per_batch samples
         shuffle=True, 
         pin_memory=True,
-        num_workers=2, 
+        num_workers=1, 
         persistent_workers=True, 
-        prefetch_factor=2
+        prefetch_factor=1
     )
     
     main_throughput_tracker = ThroughputTracker('patch_loading')
     
     print(f"Dataset length: {len(dataset)}")
-    print(f"Total available patches: {len(dataset.patch_index)}")
+    # print(f"Total available patches: {len(dataset.patch_index)}")
     print(f"Starting throughput test...")
     
     while True:
-        for batch_idx, (patches, labels, global_coords, valid_mask) in enumerate(dataloader):
+        for batch_idx, (patches, labels, global_coords) in enumerate(dataloader):
             # patches shape: [batch_size, channels, depth, height, width]
             # labels shape: [batch_size, max_motors, 4]
             # global_coords shape: [batch_size, 3]
             # valid_mask shape: [batch_size, max_motors]
             
+            positive_pixels = (labels > 0).sum().item()
+            total_pixels = labels.numel()
+            
+            # print(f"Batch {batch_idx}: {positive_pixels}/{total_pixels} positive pixels ({positive_pixels/total_pixels*100:.2f}%)")
+            
+            
             num_bytes = patches.numel() * patches.element_size()
             main_mb = num_bytes / (1024 * 1024)
             main_throughput_tracker.update(main_mb)
+            
+            
             
             # if batch_idx == 0:
             #     print(f"First batch shapes:")
@@ -236,5 +249,5 @@ if __name__ == '__main__':
             #     print(f"  Valid mask: {valid_mask.shape}")
         
         # Resample for next epoch
-        dataset.resample_batch()
-        print("Resampled patches for next epoch")
+        # dataset.resample_batch()
+        # print("Resampled patches for next epoch")

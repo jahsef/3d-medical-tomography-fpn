@@ -3,7 +3,6 @@
 *.pyc
 *.zip
 *.pt
-*.csv
 normalized_zarr_data
 *.pkl
 *.npy

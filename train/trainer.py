@@ -9,7 +9,7 @@ import pandas as pd
 from pathlib import Path
 import utils
 import gc
-
+import torch.nn.functional as F
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -32,17 +32,17 @@ def log_metrics(epoch, filename="logs.csv", **kwargs):
 class Trainer:
 
     def __init__(self, model, batches_per_step,train_loader, val_loader, optimizer, scheduler,
-                 regression_loss_fn, conf_loss_fn, regression_loss_weight, conf_loss_weight,device,
-                 save_dir='./models/'):
+                conf_loss_fn,device,
+                save_dir='./models/'):
 
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.batches_per_step = batches_per_step
-        self.regression_loss_fn = regression_loss_fn
+        # self.regression_loss_fn = regression_loss_fn
         self.conf_loss_fn = conf_loss_fn
-        self.regression_loss_weight = regression_loss_weight
-        self.conf_loss_weight = conf_loss_weight
+        # self.regression_loss_weight = regression_loss_weight
+        # self.conf_loss_weight = conf_loss_weight
         
         self.device = device
         self.train_loader = train_loader
@@ -54,7 +54,7 @@ class Trainer:
         
     def _compute_batch_loss(self, patches, labels):
         """
-        Compute regression and confidence losses for a batch.
+        Compute loss for batch duh
         
         Args:
             patches (torch.Tensor): Input patches tensor.
@@ -62,9 +62,7 @@ class Trainer:
             valid_mask (torch.Tensor): precomputed bool mask if conf > 0, used for regression loss masking
             
         Returns:
-            regression_loss (torch.Tensor)
             conf_loss (torch.Tensor)
-            combined_loss (torch.Tensor)
         """
 
 
@@ -72,38 +70,30 @@ class Trainer:
         patches = patches.to(self.device)
         # assert labels.shape == (1,4), f'labels shape wrong?: {labels.shape}'
         #i forgot labels are batched here lol
-        valid_mask = (labels[... , 3] > 0).bool()  # Shape: [b,max_motors]
+        # valid_mask = (labels[... , 3] > 0).bool()  # Shape: [b,max_motors]
         
         labels = labels.to(self.device)
-        valid_mask = valid_mask.to(self.device)
+        # valid_mask = valid_mask.to(self.device)
         
         with torch.amp.autocast(device_type="cuda"):
             outputs = self.model(patches)
-            #regression loss should only be from ground truth non zeros
-            #[valid_mask:3] chooses the correct rows
-            #if we use [..., :3][valid_mask] thats incorrect because of shapes
-            #broadcasting is hard
-            #regression loss with all false labels results in nan
-            #setting regression loss to 0 in that case
-            if valid_mask.sum() == 0:
-                regression_loss = torch.tensor([0]).to(self.device)
-            else:
-                regression_loss = self.regression_loss_fn(outputs[valid_mask, :3], labels[valid_mask, :3])
-                
-            conf_loss = self.conf_loss_fn(outputs[..., 3], labels[..., 3])#.to(torch.float32)), float 32 is only needed since i save as int32, but i convert to float32 earlier now
-                        
-        weighted_regression_loss = self.regression_loss_weight * regression_loss
-        weighted_conf_loss = self.conf_loss_weight * conf_loss
-        combined_loss = weighted_regression_loss + weighted_conf_loss
 
-        return regression_loss, conf_loss, combined_loss 
+            #outputs, labels are b,1,d,h,w now
+            #can just squeeze it down
+            
+            conf_loss = self.conf_loss_fn(outputs, labels)
+            
+            # bce_loss = F.binary_cross_entropy_with_logits(outputs, labels)
+            # print(f"Focal: {conf_loss:.4f}, BCE: {bce_loss:.4f}")
+
+
+        return conf_loss 
     
     def _train_one_epoch(self, epoch_index):
         # Clear CUDA cache at start of epoch
         # if torch.cuda.is_available():
         #     torch.cuda.empty_cache()
         
-        regression_loss_tracker = utils.LossTracker(is_mean_loss=True)
         conf_loss_tracker = utils.LossTracker(is_mean_loss=True)
 
         self.model.train()
@@ -119,9 +109,11 @@ class Trainer:
             if batch_idx % self.batches_per_step == 0:#0,5,10
                 self.optimizer.zero_grad()
 
-            regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, labels)
+            conf_loss = self._compute_batch_loss(patches, labels)
             
-            combined_loss.backward()
+            # combined_loss.backward()
+            conf_loss.backward()
+            
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 100)
             
             if (batch_idx + 1) % self.batches_per_step == 0:#4,9
@@ -129,14 +121,12 @@ class Trainer:
                     
             self.scheduler.step()
 
-            regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patches.shape[0])
             conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
 
 
             if (batch_idx + 1) % 1 == 0 or (batch_idx + 1) == total_batches:
                 progress_bar.set_postfix(
-                    loss=f"regression loss: {regression_loss_tracker.get_epoch_loss():.4f}, "
-                        f"conf loss: {conf_loss_tracker.get_epoch_loss():.4f}"
+                    loss= f"conf loss: {conf_loss_tracker.get_epoch_loss():.4f}"
                 )
                 
             # # Clear memory at end of batch
@@ -145,10 +135,10 @@ class Trainer:
             #         torch.cuda.empty_cache()
             #     gc.collect()
         
-        regression_loss = regression_loss_tracker.get_epoch_loss()
+
         conf_loss = conf_loss_tracker.get_epoch_loss()
-        combined_loss = regression_loss + conf_loss
-        return regression_loss, conf_loss, combined_loss
+        
+        return conf_loss
 
 
     def _validate_one_epoch(self):
@@ -156,66 +146,57 @@ class Trainer:
         # 1. create a new dir for full tomograms in .pt format (only from my validation stuff since it takes 10000000 gb of data)
         # 2. i have paths to my tomogram patch directories right, so at start of runtime i would reconstruct the full tomogram dirs from my list (i dont want to manually do this)
         # 3. pass in the list of paths to validation
-        regression_loss_tracker = utils.LossTracker(is_mean_loss=True)
         conf_loss_tracker = utils.LossTracker(is_mean_loss=True)
 
         self.model.eval()
 
         with torch.no_grad():
             for patches, labels, global_coords in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
-                regression_loss, conf_loss, combined_loss = self._compute_batch_loss(patches, labels)
-
-                regression_loss_tracker.update(batch_loss=regression_loss.item(), batch_size=patches.shape[0])
+                conf_loss= self._compute_batch_loss(patches, labels)
                 conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
-                
-        regression_loss = regression_loss_tracker.get_epoch_loss()
         conf_loss = conf_loss_tracker.get_epoch_loss()
-        combined_loss = regression_loss + conf_loss
-        return regression_loss, conf_loss, combined_loss
-
+        return conf_loss
 
     def train(self, epochs=50, save_period=0):
         csv_filepath = os.path.join(self.save_dir, "train_results.csv")
         logger = utils.Logger()
         logger.log_training_settings(model=self.model, save_dir=self.save_dir)
         
-        best_val_total_loss = float('inf')
+        best_val_loss = float('inf')
         best_model_path = os.path.join(self.save_dir, 'best.pt')
+        optimizer_path = os.path.join(self.save_dir, 'best_optimizer.pt')
         
         for epoch in range(epochs):
-            train_regression_loss, train_conf_loss, train_total_loss = self._train_one_epoch(epoch)
+            train_conf_loss = self._train_one_epoch(epoch)
             # val_regression_loss, val_conf_loss, val_total_loss = self._validate_one_epoch()
-            val_regression_loss, val_conf_loss, val_total_loss = 0,0,0
+            # val_conf_loss = 0
+            val_conf_loss = self._validate_one_epoch()
             
             print(f"Epoch {epoch}:")
-            print(f"  Train Regression Loss: {train_regression_loss:.6f} | Val Regression Loss: {val_regression_loss:.6f}")
             print(f"  Train Conf Loss      : {train_conf_loss:.6f} | Val Conf Loss      : {val_conf_loss:.6f}")
-            print(f"  Train Weighted Total Loss     : {train_total_loss:.6f} | Val Weighted Total Loss     : {val_total_loss:.6f}")
             print("-" * 60)  # separator line for readability
 
 
             log_metrics(epoch,
-                train_regression_loss=train_regression_loss,
-                val_regression_loss=val_regression_loss,
                 train_conf_loss=train_conf_loss,
                 val_conf_loss=val_conf_loss,
-                train_total_loss=train_total_loss,
-                val_total_loss=val_total_loss,
                 filename=csv_filepath
             )
 
-            # if val_total_loss < best_val_total_loss:
-            if True:
-                print('just saving every time rn lol')
-                best_val_total_loss = val_total_loss
+            if val_conf_loss < best_val_loss or val_conf_loss == 0:
+
+                best_val_loss = val_conf_loss
                 
                 logging.info(f"Validation accuracy improved. Saving model to {best_model_path}")
                 torch.save(self.model.state_dict(), best_model_path)
+                torch.save(self.optimizer.state_dict(), optimizer_path)
 
             if save_period != 0 and (epoch + 1) % save_period == 0:
-                periodic_save_path = os.path.join(self.save_dir, f"epoch{epoch+1}.pt")
+                periodic_save_path = os.path.join(self.save_dir, f"epoch{epoch}.pt")
+                periodic_optimizer_save_path = os.path.join(self.save_dir, f"epoch{epoch}_optimizer.pt")
                 torch.save(self.model.state_dict(), periodic_save_path)
-
+                torch.save(self.optimizer.state_dict(), periodic_optimizer_save_path)
+                
         logger.graph_training(csv_path=csv_filepath)
 
 if __name__ == '__main__':

@@ -369,10 +369,11 @@ def prune_empty_dirs(master_tomo_dir: Path):
 if __name__ == '__main__':
     src_root = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train')
     dst_root = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\patch_pt_data')
+    Path.mkdir(dst_root, parents= False, exist_ok= True)
     csv_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv')
     
     # Parameters
-    p = 64
+    p = 96
     s = p // 4  # 16 pixel stride
     
     patch_size = (p, p, p)
@@ -380,9 +381,9 @@ if __name__ == '__main__':
     workers = 4  # Start with 1 for debugging
 
     # Sampling parameters
-    positive_keep_fraction = 1.0  # Keep all positive patches
-    global_negative_keep_fraction = 0.01  # 1% of all negative patches globally
-    min_negative_samples = 200  # Minimum negative samples per tomogram
+    positive_keep_fraction = 1  # Keep all positive patches
+    global_negative_keep_fraction = 0.0069  # 1% of all negative patches globally
+    min_negative_samples = 50  # Minimum negative samples per tomogram
     
     global_max_motors = 20
     patch_max_motors = 1
@@ -412,7 +413,4 @@ if __name__ == '__main__':
     
     # Analyze the final dataset balance
     analyze_dataset_balance(dst_root)
-    # Dataset Statistics:
-    # Total patches: 517124
-    # Positive patches: 26918 (5.2%)
-    # Negative patches: 490206 (94.8%)
+    
