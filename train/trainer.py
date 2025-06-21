@@ -77,7 +77,7 @@ class Trainer:
         
         with torch.amp.autocast(device_type="cuda"):
             outputs = self.model(patches)
-
+            # print(outputs.shape)
             #outputs, labels are b,1,d,h,w now
             #can just squeeze it down
             
@@ -126,7 +126,7 @@ class Trainer:
 
             if (batch_idx + 1) % 1 == 0 or (batch_idx + 1) == total_batches:
                 progress_bar.set_postfix(
-                    loss= f"conf loss: {conf_loss_tracker.get_epoch_loss():.4f}"
+                    loss= f"conf loss: {conf_loss_tracker.get_epoch_loss():.6f}"
                 )
                 
             # # Clear memory at end of batch

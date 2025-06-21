@@ -11,7 +11,7 @@ import torchio as tio
 from torch.utils.data.dataloader import DataLoader
 import monai
 import gc
-import time
+
 
 class MotorIdentifier(nn.Module):
     
@@ -24,7 +24,7 @@ class MotorIdentifier(nn.Module):
         # Encoder (Downsampling path)
         self.encoder = nn.Sequential(
             #c16, 64^3
-            nn.Conv3d(1,FOC//8, kernel_size=5, stride = 1, padding = 2),
+            nn.Conv3d(1,FOC//8, kernel_size=5, stride = 1),
             nnblock.PreActResBlock3d(FOC//8, FOC//8, norm_type=norm_type),
             #c32, 64^3
             nnblock.PreActResBlock3d(FOC//8, FOC//4, stride = 2, kernel_size=3, norm_type=norm_type),
@@ -36,7 +36,6 @@ class MotorIdentifier(nn.Module):
             nnblock.PreActResBlock3d(FOC//2, FOC, stride = 2, kernel_size=3, norm_type=norm_type),
             nnblock.PreActResBlock3d(FOC, FOC, norm_type=norm_type),
             nnblock.PreActResBlock3d(FOC, FOC, norm_type=norm_type),
-            nn.Dropout3d(p=0.1, inplace=True)
         )
         
         #encoder increases channels, decreases spatial size
@@ -59,7 +58,8 @@ class MotorIdentifier(nn.Module):
         self.classification_head = nn.Sequential(
             nnblock.get_norm_layer(norm_type=norm_type, num_channels=FOC//8),
             nn.SiLU(inplace=True),
-            nn.Conv3d(FOC//8,1, stride = 1, kernel_size=3,padding = 1, bias=False)
+            nn.Conv3d(FOC//8, 1, kernel_size=3,padding = 1, bias=False)
+            
         )
         
         
@@ -69,13 +69,15 @@ class MotorIdentifier(nn.Module):
 
 
     def forward(self, x):
-        # print(f"Input: {x.shape}")
-        encoded = self.encoder(x)
-        # print(f"Encoded: {encoded.shape}")
-        decoded = self.decoder(encoded)
-        # print(f"Decoded: {decoded.shape}")
+        # Encode
+        features = self.encoder(x)
+        
+        # Decode
+        decoded = self.decoder(features)
+        
+        # Final prediction
         output = self.classification_head(decoded)
-        # print(f"Output: {output.shape}")
+        
         return output
 
 

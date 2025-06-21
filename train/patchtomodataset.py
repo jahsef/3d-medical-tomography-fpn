@@ -101,16 +101,9 @@ class PatchTomoDataset(torch.utils.data.Dataset):
                 # print(coords)
                 
                 assert torch.allclose(sparse_label[0, :3], coords), f'{sparse_label[0, :3]}, {coords}'
-                # print(f"Patch shape: {patch.shape}")
-                # print(f"Sparse label coords: {sparse_label[0, :3]}")
-                # print(f"Coordinate ranges - D: {sparse_label[0, 0]}, H: {sparse_label[0, 1]}, W: {sparse_label[0, 2]}")
-                bool = torch.all(sparse_label[0, :3] >= 0) and torch.all(sparse_label[0, :3] < 64)
-                # print(f"Are coords in valid range (0-63)? {bool}")
-                if not bool:
-                    raise Exception("BRUH NOT TRUE")
                 
                 
-                if False:
+                if True:
                     motor_z = int(sparse_label[0, 0]) 
                     plt.figure(figsize=(12, 4))
                     
@@ -120,13 +113,13 @@ class PatchTomoDataset(torch.utils.data.Dataset):
                     plt.plot(sparse_label[0, 2], sparse_label[0, 1], 'ro', markersize=8)
                     
                     plt.subplot(1, 3, 2)
-                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='plasma')
+                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='viridis')
                     plt.title(f'Heatmap at depth {motor_z}')
                     
                     plt.subplot(1, 3, 3)
                     # Overlay
                     plt.imshow(patch[0, motor_z].cpu(), cmap='gray', alpha=0.7)
-                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='plasma', alpha=0.3)
+                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='viridis', alpha=0.3)
                     plt.title('Overlay')
                     
                     plt.tight_layout()

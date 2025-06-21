@@ -95,14 +95,7 @@ class FocalLoss(nn.Module):
         pt = torch.exp(-bce_loss)
         focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
         return focal_loss.mean()
-    
-class SigmoidMSE(nn.Module):
-    def __init__(self):
-        super().__init__()
 
-    def forward(self, pred, ground_truth):
-        sigmoid_mse_loss = F.mse_loss(F.sigmoid(pred), ground_truth)
-        return sigmoid_mse_loss
 
 
     
@@ -161,13 +154,13 @@ if __name__ == "__main__":
     
 
     model = MotorIdentifier(norm_type="gn")
-    model.print_params()
-    time.sleep(1000)
+    # model.print_params()
+    # time.sleep(1000)
     
     # model = TrivialModel()
     
-    # print('loading state dict into model\n'*20)
-    # model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run5\best.pt'))
+    print('loading state dict into model\n'*20)
+    model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run4\best.pt'))
     
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Prefreeze Trainable params: {trainable_params}")
@@ -177,7 +170,7 @@ if __name__ == "__main__":
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Postfreeze Trainable params: {trainable_params}")
 
-    save_dir = './models/heatmap/curriculum5/run1/'
+    save_dir = './models/heatmap/curriculum4/run4/'
     
     os.makedirs(save_dir, exist_ok= True)#just so we dont accidentally overwrite stuff
     
@@ -186,7 +179,7 @@ if __name__ == "__main__":
     # tomo_id_list = tomo_id_list[:len(tomo_id_list)]
     
     train_id_list, val_id_list = train_test_split(tomo_id_list, train_size= 0.95, test_size= 0.05, random_state= 42)
-    train_id_list = train_id_list[:len(train_id_list)//15*8]
+    train_id_list = train_id_list[:len(train_id_list)//15*4]
     
     # train_id_list = ['tomo_d7475d']
     
@@ -194,17 +187,14 @@ if __name__ == "__main__":
     # val_id_list = val_id_list[:len(val_id_list)//10]
     val_id_list = []
     # print(f'validation tomograms for debugging: {val_id_list}')
-    #1/30, 1/15, 2/15, 4/15, 8/15
+    #1/30, 1/15, 2/15, 4/15
     #2/15 was overwritten by 4/15
-    #4/15 run4
-    #8/15 run5
     
-    #/100 is for mse
     epochs =10
-    lr = 1e-3 / 2 / 2 / 2 / 2 #started with 1e-3 for 1//30
+    lr = 1e-3 / 2 / 2 / 2#started with 1e-3 for 1//30
     batch_size = 1
     batches_per_step = 1 #for gradient accumulation (every n batches we step)
-    steps_per_epoch = 2400
+    steps_per_epoch = 512
     
     std_dev = 16
     
@@ -223,7 +213,7 @@ if __name__ == "__main__":
     
     print('Loading state dict into optimizer')
     optimizer_state = torch.load(
-        r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run5\best_optimizer.pt', 
+        r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run4\best_optimizer.pt', 
         map_location=device
     )
     optimizer.load_state_dict(optimizer_state)
@@ -234,14 +224,6 @@ if __name__ == "__main__":
                 state[k] = v.to(device)
     
     conf_loss_fn = FocalLoss(alpha = 2, gamma = 0)#alpha is pos weight, gamma is focusing param
-    
-    # conf_loss_fn = SigmoidMSE()
-    
-    #abs(targets - sigmoid(inputs))**gamma
-    #could change (1-p_t) to that
-    #but also, literature usually uses MSE for heatmaps so
-    #MSE IS LITERALLY BETTER, DOWNWEIGHTS EASY STUFF AND UPWEIGHTS HARD STUFF
-    
     #WARNING WARNING DONT USE GAMMA FOR NOW THE (1-P) TERM IS FOR CLASSIFICATION NOT HEATMAP
     
     

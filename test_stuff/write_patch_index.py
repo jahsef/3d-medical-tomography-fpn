@@ -59,7 +59,7 @@ if __name__ == '__main__':
             table.append(row)
         
     df = pd.DataFrame(data = table, columns=['tomo_id', 'patch_id', 'has_motor'])    
-    df.to_csv(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\test_stuff/patch_index.csv', index = False)
+    df.to_csv(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv', index = False)
 
     # df.add()
 # if __name__ == '__main__':

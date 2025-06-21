@@ -161,13 +161,13 @@ if __name__ == "__main__":
     
 
     model = MotorIdentifier(norm_type="gn")
-    model.print_params()
-    time.sleep(1000)
+    # model.print_params()
+    # time.sleep(1000)
     
     # model = TrivialModel()
     
-    # print('loading state dict into model\n'*20)
-    # model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run5\best.pt'))
+    print('loading state dict into model\n'*20)
+    model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run5\best.pt'))
     
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Prefreeze Trainable params: {trainable_params}")
@@ -177,7 +177,7 @@ if __name__ == "__main__":
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Postfreeze Trainable params: {trainable_params}")
 
-    save_dir = './models/heatmap/curriculum5/run1/'
+    save_dir = './models/heatmap/curriculum4/run5/'
     
     os.makedirs(save_dir, exist_ok= True)#just so we dont accidentally overwrite stuff
     
