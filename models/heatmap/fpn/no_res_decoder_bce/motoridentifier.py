@@ -39,13 +39,13 @@ class MotorIdentifier(nn.Module):
             nnblock.PreActResBlock3d(FOC//2, FOC, stride = 2, kernel_size=3, norm_type=norm_type),
             nnblock.PreActResBlock3d(FOC, FOC, norm_type=norm_type),
             nnblock.PreActResBlock3d(FOC, FOC, norm_type=norm_type),
-            # nn.Dropout3d(p=0.1, inplace=True)
+            nn.Dropout3d(p=0.1, inplace=True)
         )
         
-        self.dec3 = nnblock.UpsamplePreActResBlock3d(FOC,FOC//2,stride =2, kernel_size= 3, norm_type=norm_type)
-        self.dec2 = nnblock.UpsamplePreActResBlock3d(FOC//2,FOC//4,stride =2, kernel_size= 3, norm_type=norm_type)
-        self.dec1 = nnblock.UpsamplePreActResBlock3d(FOC//4,FOC//8,stride =2, kernel_size= 3, norm_type=norm_type)
-
+        self.dec3 = nnblock.UpsamplePreActBlock3d(FOC,FOC//2,stride =2, kernel_size= 3, norm_type=norm_type)
+        self.dec2 = nnblock.UpsamplePreActBlock3d(FOC//2,FOC//4,stride =2, kernel_size= 3, norm_type=norm_type)
+        self.dec1 = nnblock.UpsamplePreActBlock3d(FOC//4,FOC//8,stride =2, kernel_size= 3, norm_type=norm_type)
+        
         
         self.head = nn.Sequential(
             nnblock.get_norm_layer(norm_type=norm_type, num_channels=FOC//8),
@@ -66,7 +66,7 @@ class MotorIdentifier(nn.Module):
         dec2_x = self.dec2(dec3_x + enc2_x)
         dec1_x = self.dec1(dec2_x + enc1_x)
         
-        output = self.head(dec1_x+stem_x)
+        output = self.head(dec1_x)
         
         return output
 

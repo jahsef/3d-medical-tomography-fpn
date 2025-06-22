@@ -93,27 +93,18 @@ class FocalLoss(nn.Module):
     def forward(self, inputs, targets):
         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
         pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * torch.abs(targets-pt)**self.gamma * bce_loss
+        focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
         return focal_loss.mean()
     
-class BCETopKLoss(nn.Module):
-    def __init__(self, k=20):
-        super().__init__()
-        self.k = k
-    
-    def forward(self, inputs, targets):
-        # Get BCE loss for all elements
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        
-        # Flatten to 1D
-        bce_flat = bce_loss.view(-1)
-        
-        # Get top k hardest examples
-        k = min(self.k, bce_flat.size(0))  # Handle case where batch is smaller than k
-        topk_loss = torch.topk(bce_flat, k)[0]
-        
-        return topk_loss.mean()
-    
+# class SigmoidMSE(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+
+#     def forward(self, pred, ground_truth):
+#         sigmoid_mse_loss = F.mse_loss(F.sigmoid(pred), ground_truth)
+#         return sigmoid_mse_loss
+
+
     
 if __name__ == "__main__":
     
@@ -134,7 +125,7 @@ if __name__ == "__main__":
     
     train_transform = monai.transforms.Compose([
         #mild intensity
-        # transforms.RandGaussianNoised(keys = 'patch' ,dtype = torch.float16, prob = 0.33, std = 0.05),
+        transforms.RandGaussianNoised(keys = 'patch' ,dtype = torch.float16, prob = 0.33, std = 0.05),
         transforms.RandShiftIntensityd(keys = 'patch', offsets = 0.1,safe = True, prob = 0.33, ),
         #slightly less mild intensity
         # transforms.RandGaussianSmoothd(keys="patch", sigma_x=(0.025, 0.075), sigma_y=(0.025, 0.075), sigma_z=(0.025, 0.075), prob=0.33),
@@ -182,8 +173,8 @@ if __name__ == "__main__":
     
     # model = TrivialModel()
     
-    # print('loading state dict into model\n'*20)
-    # model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run1\best.pt'))
+    print('loading state dict into model\n'*20)
+    model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run1\best.pt'))
     
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Prefreeze Trainable params: {trainable_params}")
@@ -193,7 +184,7 @@ if __name__ == "__main__":
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Postfreeze Trainable params: {trainable_params}")
 
-    save_dir = './models/heatmap/fart/run1/'
+    save_dir = './models/heatmap/fpn_curriculum/run1/'
     
     os.makedirs(save_dir, exist_ok= True)#just so we dont accidentally overwrite stuff
     
@@ -210,14 +201,13 @@ if __name__ == "__main__":
     val_id_list =    []
 
     epochs = 10
-    #another 1/2 just because
     lr = 1e-4
     batch_size = 1
     batches_per_step = 1 #for gradient accumulation (every n batches we step)
-    steps_per_epoch = 384
-
+    steps_per_epoch = 360
+    
     blob_sigma = 16
-    weight_sigma_scale = 1.0#larger is prolly fine for downscaled heatmaps
+    weight_sigma_scale = 1/2
     
     # optimizer = torch.optim.AdamW(model.parameters(), lr = lr, weight_decay= 1e-4)
     encoder_params = list(model.stem.parameters()) + list(model.enc1.parameters()) + list(model.enc2.parameters()) + list(model.enc3.parameters())
@@ -231,24 +221,24 @@ if __name__ == "__main__":
     #we only load optimizer state when basically everything we are doing is the same
     #optimizer state has a bunch of running avgs
     
-    # print('Loading state dict into optimizer')
-    # optimizer_state = torch.load(
-    #     r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run2\best_optimizer.pt', 
-    #     map_location=device
-    # )
-    # optimizer.load_state_dict(optimizer_state)
-    # # Force move optimizer state to device after loading
-    # for state in optimizer.state.values():
-    #     for k, v in state.items():
-    #         if torch.is_tensor(v):
-    #             state[k] = v.to(device)
+    print('Loading state dict into optimizer')
+    optimizer_state = torch.load(
+        r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run1\best_optimizer.pt', 
+        map_location=device
+    )
+    optimizer.load_state_dict(optimizer_state)
+    # Force move optimizer state to device after loading
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.to(device)
     
-    # conf_loss_fn = FocalLoss(alpha = 2, gamma = 1)#alpha is pos weight, gamma is focusing param
+    conf_loss_fn = FocalLoss(alpha = 2, gamma = 0)#alpha is pos weight, gamma is focusing param
     
     # conf_loss_fn = SigmoidMSE()
 
     #WARNING WARNING DONT USE GAMMA FOR NOW THE (1-P) TERM IS FOR CLASSIFICATION NOT HEATMAP
-    conf_loss_fn = nn.BCEWithLogitsLoss()
+    # conf_loss_fn = nn.BCEWithLogitsLoss()
 
     
     train_dataset = PatchTomoDataset(
@@ -268,10 +258,10 @@ if __name__ == "__main__":
     )
     
     pin_memory = True
-    num_workers = 2
-    val_workers = 1
-    persistent_workers = True
-    prefetch_factor = 1
+    num_workers = 0
+    val_workers = 0
+    persistent_workers = False
+    prefetch_factor = None
     
     sampler = RandomNSampler(train_dataset, n = batch_size*batches_per_step*steps_per_epoch)
     # g = torch.Generator()

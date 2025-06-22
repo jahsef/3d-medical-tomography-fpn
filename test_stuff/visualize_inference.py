@@ -15,7 +15,7 @@ from model_defs.motoridentifier import MotorIdentifier
 
 # Configuration
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4\run5\best.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fart\run1\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train')
 master_tomo_path = Path.cwd() / 'patch_pt_data'
@@ -37,7 +37,7 @@ train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.95, tes
 
 #after successful curriculum we can move to skip connection ae better enc:dec ratio 4:1 and gaussian weighting for labels (we can keep edge motors)
 
-train_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :]
+train_id_list = train_id_list[len(train_id_list)*0:len(train_id_list)//10 :]
 # train_id_list = val_id_list
 # train_id_list = ['tomo_d7475d']
 

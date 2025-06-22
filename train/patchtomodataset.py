@@ -4,15 +4,16 @@ import numpy as np
 import random
 import pandas as pd
 import pathlib
+import matplotlib.pyplot as plt
 
 class PatchTomoDataset(torch.utils.data.Dataset):
-    def __init__(self, sigma:float,patch_index_path: Path, transform=None, tomo_id_list: list[str] = None):
+    def __init__(self, blob_sigma:float,sigma_scale:float,downsampling_factor:int,patch_index_path: Path, transform=None, tomo_id_list: list[str] = None):
         """
         Args:
             patch_index_path (Path): self explanatory
             patches_per_batch (int): number of patches to sample per batch
             transform: optional transforms to apply to patches
-            sigma: gaussian std dev for labels (idk is good i think)
+            blob_sigma: gaussian std dev for labels (idk is good i think)
             tomo_id_list: list of tomograms(SHOULD BE TOMO IDS ONLY) we want to be in our patch based dataset 
         """
         super().__init__()
@@ -31,14 +32,18 @@ class PatchTomoDataset(torch.utils.data.Dataset):
         
         print(f"Dataset: {len(positive_indices)} positive, {len(negative_indices)} negative")
         
+        
         self.transform = transform
-        self.sigma = sigma
+        self.blob_sigma = blob_sigma
+        self.sigma_scale = sigma_scale
+        self.downsampling_factor = downsampling_factor
+        
         # self._resample_batch()
         
         
         #define gaussian blobs?
 
-        #sigma std of 2 is fine for my usecase maybe 1.5-3 would work idk
+        #blob_sigma std of 2 is fine for my usecase maybe 1.5-3 would work idk
         
         
     def __len__(self):
@@ -61,66 +66,88 @@ class PatchTomoDataset(torch.utils.data.Dataset):
         if patch.ndim == 3:
             # print('unsqueezing')
             patch = patch.unsqueeze(0)
-            
+        
+        d_i,h_i,w_i = patch.shape[1:]
+        
+        d_f, h_f, w_f = d_i//self.downsampling_factor, h_i // self.downsampling_factor, w_i//self.downsampling_factor
+        
         if sparse_label[0,3] == 1:#if valid motor
             #gaussian blobbing function here
-            label_x, label_y, label_z = map(int,sparse_label[0, :3])
+            label_x, label_y, label_z = sparse_label[0, :3] / self.downsampling_factor
             
-            x,y,z = torch.arange(end = patch.shape[1]),torch.arange(end = patch.shape[2]),torch.arange(end = patch.shape[3])
-            
+            x,y,z = torch.arange(end = d_f),torch.arange(end = h_f),torch.arange(end = w_f)
             grid_x, grid_y, grid_z = torch.meshgrid(x,y,z, indexing = 'ij')
-            # print('positive')
-            dense_label = torch.exp( -((grid_x-label_x)**2 + (grid_y-label_y)**2 + (grid_z-label_z)**2) / (2 * (self.sigma**2))).to(torch.float16).unsqueeze(0)
-            
-            
-            
-            
-            
 
-                        
-            # print(dense_label)
+            pre_weighted_label = torch.exp( -((grid_x-label_x)**2 + (grid_y-label_y)**2 + (grid_z-label_z)**2) / (2 * (self.blob_sigma**2))).to(torch.float16).unsqueeze(0)
             
-            if False:
-                import matplotlib.pyplot as plt
+            avg_dims = (d_f+h_f+w_f)/3
 
-                
-                max_idx = torch.argmax(dense_label)
+            center_x, center_y, center_z = [(x-1)/2 for x in [d_f, h_f, w_f]]
+
+            gaussian_weight = torch.exp( -((grid_x-center_x)**2 + (grid_y-center_y)**2 + (grid_z-center_z)**2) / (2 * ((self.sigma_scale*avg_dims)**2))).to(torch.float16).unsqueeze(0)
+            
+            max_idx = torch.argmax(gaussian_weight)
+
+            dense_label = pre_weighted_label * gaussian_weight
+
+            if True:
+                print(f'max unweighted label value: {torch.max(pre_weighted_label)}')
+                max_idx = torch.argmax(pre_weighted_label)
                 
                 c,d,h,w = torch.unravel_index(max_idx, dense_label.shape)#0,n,n,n?
+                print(f'max_idx: {d,h,w}')
+                
                 # print(f'dhw: {d}, {h}, {w}')
                 #unravel returns n_dim # of tensors, each column of tensor corresponding to an index of input array
                 #each tensor represents the index of 1 dim
                 #d,h,w should only have 1 output in this case
-                coords = torch.tensor([d.item(),h.item(),w.item()], dtype = torch.int32)
+                # coords = torch.tensor([d.item(),h.item(),w.item()], dtype = torch.int32)
 
-                print(f'coords: {coords}')
-                print(f'sparse_label: {sparse_label[0, :3]}')
-                print(f"tomo: {row['tomo_id']}")
-                print(f"global coords of label: {sparse_label[0, :3] + patch_dict['global_coords']}")
+                # print(f'coords: {coords}')
+                # print(f'sparse_label: {sparse_label[0, :3]}')
+                # print(f"tomo: {row['tomo_id']}")
+                # print(f"global coords of label: {sparse_label[0, :3] + patch_dict['global_coords']}")
                 
                 # print(coords)
                 
-                assert torch.allclose(sparse_label[0, :3], coords), f'{sparse_label[0, :3]}, {coords}'
-                
+                # assert torch.allclose(sparse_label[0, :3], coords), f'{sparse_label[0, :3]}, {coords}'
                 
                 if True:
                     motor_z = int(sparse_label[0, 0]) 
-                    plt.figure(figsize=(12, 4))
+                    plt.figure(figsize=(14, 6))
                     
-                    plt.subplot(1, 3, 1)
+                    plt.subplot(1, 5, 1)
                     plt.imshow(patch[0, motor_z].cpu(), cmap='gray')
                     plt.title(f'Raw patch at depth {motor_z}')
                     plt.plot(sparse_label[0, 2], sparse_label[0, 1], 'ro', markersize=8)
                     
-                    plt.subplot(1, 3, 2)
-                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='viridis')
-                    plt.title(f'Heatmap at depth {motor_z}')
+                    # plt.subplot(1, 5, 2)
+                    # plt.imshow(patch[0, motor_z].cpu(), cmap='gray', alpha=0.7)
+                    # plt.imshow(dense_label[0, motor_z].cpu(), cmap='viridis', alpha=0.3)
+                    # plt.title('Overlay')
                     
-                    plt.subplot(1, 3, 3)
-                    # Overlay
-                    plt.imshow(patch[0, motor_z].cpu(), cmap='gray', alpha=0.7)
-                    plt.imshow(dense_label[0, motor_z].cpu(), cmap='viridis', alpha=0.3)
-                    plt.title('Overlay')
+                    # Find the global min/max across all your data
+                    global_min = min(dense_label.min(), pre_weighted_label.min(), gaussian_weight.min())
+                    global_max = max(dense_label.max(), pre_weighted_label.max(), gaussian_weight.max())
+
+                    # Or set specific ranges you want to see
+                    global_min = 0
+                    global_max = 1.0  # or whatever your actual max should be
+
+                    plt.subplot(1, 5, 3)
+                    plt.imshow(dense_label[0, motor_z//self.downsampling_factor].cpu(), cmap='viridis', vmin=global_min, vmax=global_max)
+                    plt.title(f'Weighted Heatmap at depth {motor_z}')
+                    plt.colorbar(shrink=0.25)
+
+                    plt.subplot(1, 5, 4)
+                    plt.imshow(pre_weighted_label[0, motor_z//self.downsampling_factor, ...].numpy(), cmap='viridis', vmin=global_min, vmax=global_max)
+                    plt.title(f'Unweighted Heatmap at depth {motor_z}')
+                    plt.colorbar(shrink=0.25)
+
+                    plt.subplot(1, 5, 5)
+                    plt.imshow(gaussian_weight[0, motor_z//self.downsampling_factor, ...].numpy(), cmap='viridis', vmin=global_min, vmax=global_max)
+                    plt.title('Gaussian Weighting')
+                    plt.colorbar(shrink=0.25)
                     
                     plt.tight_layout()
                     plt.show()
@@ -193,7 +220,9 @@ if __name__ == '__main__':
     
     # Create dataset with patches_per_batch parameter
     dataset = PatchTomoDataset(
-        sigma=16,
+        blob_sigma=3,
+        sigma_scale=1,
+        downsampling_factor=16,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         transform = None,
     )

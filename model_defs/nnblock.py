@@ -132,7 +132,29 @@ class UpsamplePreActResBlock3d(nn.Module):
 
     def forward(self, x):
         return self.features(x) + self.skip(x)
+    
+class UpsamplePreActBlock3d(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=2, kernel_size=3, norm_type="bn3d", target_channels_per_group=4):
+        super().__init__()
+        fart = kernel_size - 1
+        padding = fart//2
 
+        self.features = nn.Sequential(
+            get_norm_layer(norm_type, in_channels, target_channels_per_group),
+            nn.SiLU(inplace=True),
+            # Upsample spatially first, keep channels same
+            nn.ConvTranspose3d(in_channels, in_channels, kernel_size=kernel_size, 
+                      padding=padding, stride=stride, output_padding=stride-1, bias=False),
+
+            get_norm_layer(norm_type, in_channels, target_channels_per_group),
+            nn.SiLU(inplace=True),
+            # Then adjust channels
+            nn.Conv3d(in_channels, out_channels, kernel_size=kernel_size, 
+                      padding=padding, bias=False),
+        )
+
+    def forward(self, x):
+        return self.features(x)
  
     
 class DropoutPreActResBlock2d(nn.Module):

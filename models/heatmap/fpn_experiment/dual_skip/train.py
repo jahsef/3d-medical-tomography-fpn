@@ -93,27 +93,18 @@ class FocalLoss(nn.Module):
     def forward(self, inputs, targets):
         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
         pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * torch.abs(targets-pt)**self.gamma * bce_loss
+        focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
         return focal_loss.mean()
     
-class BCETopKLoss(nn.Module):
-    def __init__(self, k=20):
-        super().__init__()
-        self.k = k
-    
-    def forward(self, inputs, targets):
-        # Get BCE loss for all elements
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        
-        # Flatten to 1D
-        bce_flat = bce_loss.view(-1)
-        
-        # Get top k hardest examples
-        k = min(self.k, bce_flat.size(0))  # Handle case where batch is smaller than k
-        topk_loss = torch.topk(bce_flat, k)[0]
-        
-        return topk_loss.mean()
-    
+# class SigmoidMSE(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+
+#     def forward(self, pred, ground_truth):
+#         sigmoid_mse_loss = F.mse_loss(F.sigmoid(pred), ground_truth)
+#         return sigmoid_mse_loss
+
+
     
 if __name__ == "__main__":
     
@@ -132,26 +123,26 @@ if __name__ == "__main__":
     # scale
     # spatial
     
-    train_transform = monai.transforms.Compose([
-        #mild intensity
-        # transforms.RandGaussianNoised(keys = 'patch' ,dtype = torch.float16, prob = 0.33, std = 0.05),
-        transforms.RandShiftIntensityd(keys = 'patch', offsets = 0.1,safe = True, prob = 0.33, ),
-        #slightly less mild intensity
-        # transforms.RandGaussianSmoothd(keys="patch", sigma_x=(0.025, 0.075), sigma_y=(0.025, 0.075), sigma_z=(0.025, 0.075), prob=0.33),
-        transforms.RandAdjustContrastd(keys="patch", gamma=(0.9, 1.15), prob=0.33),
+    # train_transform = monai.transforms.Compose([
+    #     #mild intensity
+    #     transforms.RandGaussianNoised(keys = 'patch' ,dtype = torch.float16, prob = 0.33, std = 0.01),
+    #     transforms.RandShiftIntensityd(keys = 'patch', offsets = 0.1,safe = True, prob = 0.33, ),
+    #     #slightly less mild intensity
+    #     # transforms.RandGaussianSmoothd(keys="patch", sigma_x=(0.025, 0.075), sigma_y=(0.025, 0.075), sigma_z=(0.025, 0.075), prob=0.33),
+    #     # transforms.RandAdjustContrastd(keys="patch", gamma=(0.9, 1.15), prob=0.33),
         
-        #mild spatial/rotational
-        # transforms.RandRotate90d(keys=["patch", "label"], prob=0.5),
+    #     #mild spatial/rotational
+    #     # transforms.RandRotate90d(keys=["patch", "label"], prob=0.5),
         
-        # transforms.SpatialPadd(keys = ['patch', 'label'], spatial_size= [108,108,108], mode = 'reflect'),
-        # transforms.RandSpatialCropd(keys = ['patch', 'label'], roi_size = [96,96,96], random_center=True), 
+    #     # transforms.SpatialPadd(keys = ['patch', 'label'], spatial_size= [108,108,108], mode = 'reflect'),
+    #     # transforms.RandSpatialCropd(keys = ['patch', 'label'], roi_size = [96,96,96], random_center=True), 
         
-        #slightly more aggressive ones below
-        # transforms.RandRotated(keys = ['patch', 'label'], range_x=0.25, range_y=0.25, range_z=0.25, prob=0.30, mode='bilinear'),
-        # transforms.RandZoomd(keys=['patch', 'label'], min_zoom=0.95, max_zoom=1.05, prob=0.25, mode='bilinear')
-    ])
+    #     #slightly more aggressive ones below
+    #     # transforms.RandRotated(keys = ['patch', 'label'], range_x=0.25, range_y=0.25, range_z=0.25, prob=0.30, mode='bilinear'),
+    #     # transforms.RandZoomd(keys=['patch', 'label'], min_zoom=0.95, max_zoom=1.05, prob=0.25, mode='bilinear')
+    # ])
     
-    # train_transform = None
+    train_transform = None
     
     
     #TODO visualization/logging
@@ -168,13 +159,14 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # torch.manual_seed(42)
-    # torch.cuda.manual_seed(42)
-    # torch.cuda.manual_seed_all(42)
-    # np.random.seed(42)
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.benchmark = False
-    # torch.use_deterministic_algorithms(True)
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    np.random.seed(42)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+
 
     model = MotorIdentifier(norm_type="gn")
     # model.print_params()
@@ -183,7 +175,7 @@ if __name__ == "__main__":
     # model = TrivialModel()
     
     # print('loading state dict into model\n'*20)
-    # model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run1\best.pt'))
+    # model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run5\best.pt'))
     
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Prefreeze Trainable params: {trainable_params}")
@@ -193,7 +185,7 @@ if __name__ == "__main__":
     # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     # print(f"Postfreeze Trainable params: {trainable_params}")
 
-    save_dir = './models/heatmap/fart/run1/'
+    save_dir = './models/heatmap/fpn_experiment/dual_skip/'
     
     os.makedirs(save_dir, exist_ok= True)#just so we dont accidentally overwrite stuff
     
@@ -202,22 +194,20 @@ if __name__ == "__main__":
     # tomo_id_list = tomo_id_list[:len(tomo_id_list)]
     
     train_id_list, val_id_list = train_test_split(tomo_id_list, train_size= 0.95, test_size= 0.05, random_state= 42)
-    train_id_list = train_id_list[:len(train_id_list)//10]
+    train_id_list = train_id_list[:len(train_id_list)//15]
     # train_id_list = train_id_list[:1]
     # train_id_list = ['tomo_d7475d']
 
     # val_id_list = val_id_list[:len(val_id_list)//10]
-    val_id_list =    []
+    val_id_list = []
 
-    epochs = 10
-    #another 1/2 just because
+    epochs =4
     lr = 1e-4
     batch_size = 1
     batches_per_step = 1 #for gradient accumulation (every n batches we step)
-    steps_per_epoch = 384
-
-    blob_sigma = 16
-    weight_sigma_scale = 1.0#larger is prolly fine for downscaled heatmaps
+    steps_per_epoch = 128
+    
+    std_dev = 16
     
     # optimizer = torch.optim.AdamW(model.parameters(), lr = lr, weight_decay= 1e-4)
     encoder_params = list(model.stem.parameters()) + list(model.enc1.parameters()) + list(model.enc2.parameters()) + list(model.enc3.parameters())
@@ -233,7 +223,7 @@ if __name__ == "__main__":
     
     # print('Loading state dict into optimizer')
     # optimizer_state = torch.load(
-    #     r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run2\best_optimizer.pt', 
+    #     r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4/run5\best_optimizer.pt', 
     #     map_location=device
     # )
     # optimizer.load_state_dict(optimizer_state)
@@ -243,41 +233,39 @@ if __name__ == "__main__":
     #         if torch.is_tensor(v):
     #             state[k] = v.to(device)
     
-    # conf_loss_fn = FocalLoss(alpha = 2, gamma = 1)#alpha is pos weight, gamma is focusing param
+    conf_loss_fn = FocalLoss(alpha = 2, gamma = 0)#alpha is pos weight, gamma is focusing param
     
     # conf_loss_fn = SigmoidMSE()
 
     #WARNING WARNING DONT USE GAMMA FOR NOW THE (1-P) TERM IS FOR CLASSIFICATION NOT HEATMAP
-    conf_loss_fn = nn.BCEWithLogitsLoss()
+    # conf_loss_fn = nn.BCEWithLogitsLoss()
 
     
     train_dataset = PatchTomoDataset(
-        blob_sigma=blob_sigma,
-        sigma_scale=weight_sigma_scale,
+        sigma=std_dev,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         transform = train_transform,
         tomo_id_list= train_id_list
     )
     
     val_dataset = PatchTomoDataset(
-        blob_sigma=blob_sigma,
-        sigma_scale=weight_sigma_scale,
+        sigma=std_dev,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         transform = None,
         tomo_id_list= val_id_list
     )
     
     pin_memory = True
-    num_workers = 2
-    val_workers = 1
-    persistent_workers = True
-    prefetch_factor = 1
+    num_workers = 0
+    val_workers = 0
+    persistent_workers = False
+    prefetch_factor = None
+        
+    # sampler = RandomNSampler(train_dataset, n = batch_size*batches_per_step*steps_per_epoch)
+    g = torch.Generator()
+    g.manual_seed(42)
     
-    sampler = RandomNSampler(train_dataset, n = batch_size*batches_per_step*steps_per_epoch)
-    # g = torch.Generator()
-    # g.manual_seed(42)
-    
-    train_loader = DataLoader(train_dataset,shuffle = False, sampler = sampler, batch_size = batch_size, pin_memory =pin_memory, num_workers=num_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
+    train_loader = DataLoader(train_dataset,generator= g,shuffle = True, sampler = None, batch_size = batch_size, pin_memory =pin_memory, num_workers=num_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
 
     val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle = False, pin_memory =pin_memory, num_workers=val_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
 

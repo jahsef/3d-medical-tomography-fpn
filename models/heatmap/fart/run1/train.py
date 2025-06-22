@@ -217,7 +217,7 @@ if __name__ == "__main__":
     steps_per_epoch = 384
 
     blob_sigma = 16
-    weight_sigma_scale = 1.0#larger is prolly fine for downscaled heatmaps
+    weight_sigma_scale = 1/2
     
     # optimizer = torch.optim.AdamW(model.parameters(), lr = lr, weight_decay= 1e-4)
     encoder_params = list(model.stem.parameters()) + list(model.enc1.parameters()) + list(model.enc2.parameters()) + list(model.enc3.parameters())

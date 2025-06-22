@@ -26,12 +26,12 @@ logging.basicConfig(level=logging.DEBUG,
 
 
 # Configuration Parameters
-MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\curriculum4\run5\best.pt'
+MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run2\best.pt'
 MASTER_TOMO_PATH = Path.cwd() / 'original_data/train'
 ORIGINAL_DATA_PATH = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train')
 GROUND_TRUTH_CSV = r'original_data\train_labels.csv'
 OUTPUT_DIR = Path('inference_results')
-OUTPUT_CSV_NAME = 'curriculum4_run5.csv'
+OUTPUT_CSV_NAME = 'run2fpn.csv'
 
 #60,30,10,2,1
 #60:1
@@ -42,8 +42,8 @@ OUTPUT_CSV_NAME = 'curriculum4_run5.csv'
 tomo_id_list = [dir.name for dir in MASTER_TOMO_PATH.iterdir() if dir.is_dir()]
 train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.95, test_size=0.05, random_state=42)
 # val_id_list = val_id_list[:len(val_id_list):]
-# val_id_list = train_id_list[:len(train_id_list)//30]  
-val_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :4]
+val_id_list = train_id_list[:len(train_id_list)//5*2:6]  
+# val_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :4]
 # val_id_list = ['tomo_d7475d']
 
 # Inference Parameters

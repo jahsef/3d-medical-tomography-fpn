@@ -264,12 +264,12 @@ if __name__ == '__main__':
     stride = (s, s, s)
     
     # Sampling parameters
-    positive_keep_fraction = 1
-    global_negative_keep_fraction = 0.0015
+    positive_keep_fraction = 0.45
+    global_negative_keep_fraction = 0.0016
     min_negative_samples = 24
     global_max_motors = 20
     patch_max_motors = 1
-    center_region_size = 64  # Only keep motors within 64³ center region
+    center_region_size = 96  # Only keep motors within 64³ center region
     
     print("Starting patch extraction with motor centering filter...")
     print(f"Patch size: {patch_size}, Stride: {stride}")
