@@ -52,9 +52,9 @@ def get_start_indices(length, window_size, stride):
     return indices
 
 def process_single_tomogram(args):
-    """Process a single tomogram with motor centering filter."""
+    """Process a single tomogram with fractional motor centering filter."""
     (src, dst, patch_size, stride, labels, patch_max_motors, 
-     positive_keep_fraction, global_negative_keep_fraction, min_negative_samples, center_region_size) = args
+     positive_keep_fraction, global_negative_keep_fraction, min_negative_samples, center_fraction) = args
     
     print(f'Processing tomogram: {src.name}')
     
@@ -78,6 +78,14 @@ def process_single_tomogram(args):
     sd, sh, sw = stride
     
     print(f"Tomogram shape: {D}x{H}x{W}, Patch size: {pd}x{ph}x{pw}")
+    
+    # Calculate center region size based on fraction of each patch dimension
+    center_region_size = (
+        int(pd * center_fraction),
+        int(ph * center_fraction), 
+        int(pw * center_fraction)
+    )
+    print(f"Center region size: {center_region_size}")
     
     # Create output directory
     tomo_dir = dst / tomo_id
@@ -134,7 +142,9 @@ def process_single_tomogram(args):
                 patch_center = np.array([d, h, w]) + np.array(patch_size) // 2
                 distance = np.abs(motor_centroid - patch_center)
                 
-                if np.any(distance > center_region_size // 2):
+                # Use per-dimension center region sizes
+                center_limits = np.array(center_region_size) // 2
+                if np.any(distance > center_limits):
                     filtered_off_center += 1
                     negative_patches_data.append(((d, h, w), []))
                     continue
@@ -222,22 +232,22 @@ def write_whole_directory(
     min_negative_samples=200,
     global_max_motors=None,
     patch_max_motors=None,
-    center_region_size=64,
+    center_fraction=0.8,
     max_processes=None
 ):
-    """Main function to process all tomograms with motor centering filter."""
+    """Main function to process all tomograms with fractional motor centering filter."""
     labels = load_labels(csv_path, global_max_motors=global_max_motors)
     dst.mkdir(parents=True, exist_ok=True)
     
     print(f"Loaded labels for {len(labels)} tomograms")
-    print(f"Center region size: {center_region_size}³")
+    print(f"Center fraction: {center_fraction} (motors must be within {center_fraction*100}% of patch center)")
     
     tomo_dirs = [d for d in src.iterdir() if d.is_dir()]
     print(f"Found {len(tomo_dirs)} tomogram directories")
     
     args_list = [
         (tomo_dir, dst, patch_size, stride, labels, patch_max_motors, 
-         positive_keep_fraction, global_negative_keep_fraction, min_negative_samples, center_region_size)
+         positive_keep_fraction, global_negative_keep_fraction, min_negative_samples, center_fraction)
         for tomo_dir in tomo_dirs
     ]
 
@@ -258,22 +268,20 @@ if __name__ == '__main__':
     csv_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv')
     
     # Parameters
-    p = 96
-    s = p // 4
-    patch_size = (p, p, p)
-    stride = (s, s, s)
+    patch_size = (160, 288, 288)
+    stride = tuple([p//4 for p in patch_size])
     
     # Sampling parameters
-    positive_keep_fraction = 0.45
-    global_negative_keep_fraction = 0.0016
-    min_negative_samples = 24
+    positive_keep_fraction = 0.25
+    global_negative_keep_fraction = 0.001
+    min_negative_samples = 1
     global_max_motors = 20
     patch_max_motors = 1
-    center_region_size = 96  # Only keep motors within 64³ center region
+    center_fraction = 0.8  # Motors must be within 90% of patch center
     
-    print("Starting patch extraction with motor centering filter...")
+    print("Starting patch extraction with fractional motor centering filter...")
     print(f"Patch size: {patch_size}, Stride: {stride}")
-    print(f"Center region size: {center_region_size}³")
+    print(f"Center fraction: {center_fraction}")
     
     write_whole_directory(
         src=src_root,
@@ -286,6 +294,6 @@ if __name__ == '__main__':
         min_negative_samples=min_negative_samples,
         global_max_motors=global_max_motors,
         patch_max_motors=patch_max_motors,
-        center_region_size=center_region_size,
-        max_processes=4
+        center_fraction=center_fraction,
+        max_processes=3
     )

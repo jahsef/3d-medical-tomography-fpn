@@ -176,8 +176,8 @@ if __name__ == "__main__":
     # torch.backends.cudnn.benchmark = False
     # torch.use_deterministic_algorithms(True)
 
-    model = MotorIdentifier(norm_type="gn")
-    # model.print_params()
+    model = MotorIdentifier(dropout_p= 0.1, norm_type="gn")
+    model.print_params()
     # time.sleep(1000)
     
     # model = TrivialModel()
@@ -202,31 +202,34 @@ if __name__ == "__main__":
     # tomo_id_list = tomo_id_list[:len(tomo_id_list)]
     
     train_id_list, val_id_list = train_test_split(tomo_id_list, train_size= 0.95, test_size= 0.05, random_state= 42)
-    train_id_list = train_id_list[:len(train_id_list)//10]
+    train_id_list = train_id_list[:len(train_id_list)//30]
     # train_id_list = train_id_list[:1]
     # train_id_list = ['tomo_d7475d']
+    # train_id_list = ['tomo_00e047']
 
     # val_id_list = val_id_list[:len(val_id_list)//10]
     val_id_list =    []
 
     epochs = 10
     #another 1/2 just because
-    lr = 1e-4
+    lr = 1e-3
     batch_size = 1
     batches_per_step = 1 #for gradient accumulation (every n batches we step)
-    steps_per_epoch = 384
+    steps_per_epoch = 128
 
-    blob_sigma = 16
-    weight_sigma_scale = 1/2
     
-    # optimizer = torch.optim.AdamW(model.parameters(), lr = lr, weight_decay= 1e-4)
-    encoder_params = list(model.stem.parameters()) + list(model.enc1.parameters()) + list(model.enc2.parameters()) + list(model.enc3.parameters())
-    decoder_params = list(model.dec3.parameters()) + list(model.dec2.parameters()) + list(model.dec1.parameters()) + list(model.head.parameters())
-    optimizer = torch.optim.AdamW([
-        {'params': encoder_params, 'lr': lr/10 },  # we can modify encoder/decoder lr
-        {'params': decoder_params, 'lr': lr}],
-        weight_decay=1e-4
-    )
+    blob_sigma = 2.25
+    weight_sigma_scale = 0.8#larger is prolly fine for downscaled heatmaps
+    downsampling_factor = 16
+    optimizer = torch.optim.AdamW(model.parameters(), lr = lr, weight_decay= 1e-4)
+    
+    # encoder_params = list(model.stem.parameters()) + list(model.enc1.parameters()) + list(model.enc2.parameters()) + list(model.enc3.parameters())
+    # decoder_params = list(model.dec3.parameters()) + list(model.dec2.parameters()) + list(model.dec1.parameters()) + list(model.head.parameters())
+    # optimizer = torch.optim.AdamW([
+    #     {'params': encoder_params, 'lr': lr/10 },  # we can modify encoder/decoder lr
+    #     {'params': decoder_params, 'lr': lr}],
+    #     weight_decay=1e-4
+    # )
     
     #we only load optimizer state when basically everything we are doing is the same
     #optimizer state has a bunch of running avgs
@@ -254,6 +257,7 @@ if __name__ == "__main__":
     train_dataset = PatchTomoDataset(
         blob_sigma=blob_sigma,
         sigma_scale=weight_sigma_scale,
+        downsampling_factor= downsampling_factor,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         transform = train_transform,
         tomo_id_list= train_id_list
@@ -262,16 +266,17 @@ if __name__ == "__main__":
     val_dataset = PatchTomoDataset(
         blob_sigma=blob_sigma,
         sigma_scale=weight_sigma_scale,
+        downsampling_factor= downsampling_factor,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         transform = None,
         tomo_id_list= val_id_list
     )
     
     pin_memory = True
-    num_workers = 2
-    val_workers = 1
-    persistent_workers = True
-    prefetch_factor = 1
+    num_workers = 0
+    val_workers = 0
+    persistent_workers = False
+    prefetch_factor = None
     
     sampler = RandomNSampler(train_dataset, n = batch_size*batches_per_step*steps_per_epoch)
     # g = torch.Generator()

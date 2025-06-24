@@ -5,7 +5,7 @@ import random
 import pandas as pd
 import pathlib
 import matplotlib.pyplot as plt
-
+import torch.nn.functional as F
 class PatchTomoDataset(torch.utils.data.Dataset):
     def __init__(self, blob_sigma:float,sigma_scale:float,downsampling_factor:int,patch_index_path: Path, transform=None, tomo_id_list: list[str] = None):
         """
@@ -67,118 +67,113 @@ class PatchTomoDataset(torch.utils.data.Dataset):
             # print('unsqueezing')
             patch = patch.unsqueeze(0)
         
-        d_i,h_i,w_i = patch.shape[1:]
+        # Generate dense label at FULL resolution first
         
-        d_f, h_f, w_f = d_i//self.downsampling_factor, h_i // self.downsampling_factor, w_i//self.downsampling_factor
-        
-        if sparse_label[0,3] == 1:#if valid motor
-            #gaussian blobbing function here
-            label_x, label_y, label_z = sparse_label[0, :3] / self.downsampling_factor
+        d_i, h_i, w_i = patch.shape[1:]
+        min_dim = min([d_i, h_i, w_i])
+        blob_sigma_d = self.blob_sigma * (min_dim / d_i)
+        blob_sigma_h = self.blob_sigma * (min_dim / h_i) 
+        blob_sigma_w = self.blob_sigma * (min_dim / w_i)
+
+        if sparse_label[0,3] == 1:  # if valid motor
+            label_d, label_h, label_w = sparse_label[0, :3]  # Keep original coordinates
             
-            x,y,z = torch.arange(end = d_f),torch.arange(end = h_f),torch.arange(end = w_f)
-            grid_x, grid_y, grid_z = torch.meshgrid(x,y,z, indexing = 'ij')
-
-            pre_weighted_label = torch.exp( -((grid_x-label_x)**2 + (grid_y-label_y)**2 + (grid_z-label_z)**2) / (2 * (self.blob_sigma**2))).to(torch.float16).unsqueeze(0)
+            d, h, w = torch.arange(d_i), torch.arange(h_i), torch.arange(w_i)
+            grid_d, grid_h, grid_w = torch.meshgrid(d, h, w, indexing='ij')
             
-            avg_dims = (d_f+h_f+w_f)/3
-
-            center_x, center_y, center_z = [(x-1)/2 for x in [d_f, h_f, w_f]]
-
-            gaussian_weight = torch.exp( -((grid_x-center_x)**2 + (grid_y-center_y)**2 + (grid_z-center_z)**2) / (2 * ((self.sigma_scale*avg_dims)**2))).to(torch.float16).unsqueeze(0)
+            # Use anisotropic gaussian for blob
+            pre_weighted_label = torch.exp(-((grid_d-label_d)**2/(2*blob_sigma_d**2) + 
+                                            (grid_h-label_h)**2/(2*blob_sigma_h**2) + 
+                                            (grid_w-label_w)**2/(2*blob_sigma_w**2))).to(torch.float16).unsqueeze(0)
             
-            max_idx = torch.argmax(gaussian_weight)
-
+            # Center and weight calculations at full res
+            center_d, center_h, center_w = [(x-1)/2 for x in [d_i, h_i, w_i]]
+            
+            # Anisotropic weighting gaussian too
+            weight_sigma_d = self.sigma_scale * d_i
+            weight_sigma_h = self.sigma_scale * h_i
+            weight_sigma_w = self.sigma_scale * w_i
+            
+            gaussian_weight = torch.exp(-((grid_d-center_d)**2/(2*weight_sigma_d**2) + 
+                                        (grid_h-center_h)**2/(2*weight_sigma_h**2) + 
+                                        (grid_w-center_w)**2/(2*weight_sigma_w**2))).to(torch.float16).unsqueeze(0)
+            
             dense_label = pre_weighted_label * gaussian_weight
-
-            if True:
-                print(f'max unweighted label value: {torch.max(pre_weighted_label)}')
-                max_idx = torch.argmax(pre_weighted_label)
-                
-                c,d,h,w = torch.unravel_index(max_idx, dense_label.shape)#0,n,n,n?
-                print(f'max_idx: {d,h,w}')
-                
-                # print(f'dhw: {d}, {h}, {w}')
-                #unravel returns n_dim # of tensors, each column of tensor corresponding to an index of input array
-                #each tensor represents the index of 1 dim
-                #d,h,w should only have 1 output in this case
-                # coords = torch.tensor([d.item(),h.item(),w.item()], dtype = torch.int32)
-
-                # print(f'coords: {coords}')
-                # print(f'sparse_label: {sparse_label[0, :3]}')
-                # print(f"tomo: {row['tomo_id']}")
-                # print(f"global coords of label: {sparse_label[0, :3] + patch_dict['global_coords']}")
-                
-                # print(coords)
-                
-                # assert torch.allclose(sparse_label[0, :3], coords), f'{sparse_label[0, :3]}, {coords}'
-                
-                if True:
-                    motor_z = int(sparse_label[0, 0]) 
-                    plt.figure(figsize=(14, 6))
-                    
-                    plt.subplot(1, 5, 1)
-                    plt.imshow(patch[0, motor_z].cpu(), cmap='gray')
-                    plt.title(f'Raw patch at depth {motor_z}')
-                    plt.plot(sparse_label[0, 2], sparse_label[0, 1], 'ro', markersize=8)
-                    
-                    # plt.subplot(1, 5, 2)
-                    # plt.imshow(patch[0, motor_z].cpu(), cmap='gray', alpha=0.7)
-                    # plt.imshow(dense_label[0, motor_z].cpu(), cmap='viridis', alpha=0.3)
-                    # plt.title('Overlay')
-                    
-                    # Find the global min/max across all your data
-                    global_min = min(dense_label.min(), pre_weighted_label.min(), gaussian_weight.min())
-                    global_max = max(dense_label.max(), pre_weighted_label.max(), gaussian_weight.max())
-
-                    # Or set specific ranges you want to see
-                    global_min = 0
-                    global_max = 1.0  # or whatever your actual max should be
-
-                    plt.subplot(1, 5, 3)
-                    plt.imshow(dense_label[0, motor_z//self.downsampling_factor].cpu(), cmap='viridis', vmin=global_min, vmax=global_max)
-                    plt.title(f'Weighted Heatmap at depth {motor_z}')
-                    plt.colorbar(shrink=0.25)
-
-                    plt.subplot(1, 5, 4)
-                    plt.imshow(pre_weighted_label[0, motor_z//self.downsampling_factor, ...].numpy(), cmap='viridis', vmin=global_min, vmax=global_max)
-                    plt.title(f'Unweighted Heatmap at depth {motor_z}')
-                    plt.colorbar(shrink=0.25)
-
-                    plt.subplot(1, 5, 5)
-                    plt.imshow(gaussian_weight[0, motor_z//self.downsampling_factor, ...].numpy(), cmap='viridis', vmin=global_min, vmax=global_max)
-                    plt.title('Gaussian Weighting')
-                    plt.colorbar(shrink=0.25)
-                    
-                    plt.tight_layout()
-                    plt.show()
-
-
-            
         else:
-            # print('negative')
-            
-            dense_label = torch.zeros(size = patch.shape, dtype = torch.float16)
-        
+            dense_label = torch.zeros(size=(1, d_i, h_i, w_i), dtype=torch.float16)
 
         
         if self.transform:
-            dict = {
-                'patch':patch,
-                'label':dense_label,
-            }
+            dict = {'patch': patch, 'label': dense_label}
             dict = self.transform(dict)
             patch = dict['patch']
             dense_label = dict['label']
+
+        target_size = (d_i//self.downsampling_factor, h_i//self.downsampling_factor, w_i//self.downsampling_factor)
+        downsampled_label = F.interpolate(dense_label.unsqueeze(0), size=target_size, mode='trilinear').squeeze(0)
+        
+        # Visualization at the end - only for non-empty labels
+        if sparse_label[0,3] == 1 and False:  # Change True to False to disable plotting
+            print(f"Label coords: {label_d}, {label_h}, {label_w}")
+            print(f"Patch dims: {d_i}, {h_i}, {w_i}")
+            print(f'downsample dims: {downsampled_label.shape}')
+            print(f"Dense label max: {dense_label.max()}")
+            print(f'Downsampled label max: {downsampled_label.max()}')
+            
+            print(f'max unweighted label value: {torch.max(pre_weighted_label)}')
+            max_idx = torch.argmax(pre_weighted_label)
+            
+            c,d,h,w = torch.unravel_index(max_idx, dense_label.shape)#0,n,n,n?
+            print(f'max_idx: {d,h,w}')
+
+            motor_z = int(sparse_label[0, 0]) 
+            plt.figure(figsize=(14, 6))
+            
+            plt.subplot(1, 5, 1)
+            plt.imshow(patch[0, motor_z].cpu(), cmap='gray')
+            plt.title(f'Raw patch at depth {motor_z}')
+            plt.plot(sparse_label[0, 2], sparse_label[0, 1], 'ro', markersize=8)
+            
+            # Find the global min/max across all your data
+            global_min = 0
+            global_max = max(dense_label.max(), pre_weighted_label.max(), gaussian_weight.max(), downsampled_label.max())
+
+            plt.subplot(1, 5, 2)
+            plt.imshow(dense_label[0, motor_z].cpu(), cmap='viridis', vmin=global_min, vmax=global_max)
+            plt.title(f'Full Res Heatmap at depth {motor_z}')
+            plt.colorbar(shrink=0.25)
+
+            plt.subplot(1, 5, 3)
+            plt.imshow(pre_weighted_label[0, motor_z, ...].numpy(), cmap='viridis', vmin=global_min, vmax=global_max)
+            plt.title(f'Unweighted Heatmap at depth {motor_z}')
+            plt.colorbar(shrink=0.25)
+
+            plt.subplot(1, 5, 4)
+            plt.imshow(gaussian_weight[0, motor_z, ...].numpy(), cmap='viridis', vmin=global_min, vmax=global_max)
+            plt.title('Gaussian Weighting')
+            plt.colorbar(shrink=0.25)
+            
+            # Downsampled heatmap in the 5th subplot
+            downsampled_z = int(motor_z // self.downsampling_factor)
+            plt.subplot(1, 5, 5)
+            plt.imshow(downsampled_label[0, downsampled_z].cpu(), cmap='viridis', vmin=global_min, vmax=global_max)
+            plt.title(f'Downsampled Heatmap at depth {downsampled_z}')
+            plt.colorbar(shrink=0.25)
+            
+            plt.tight_layout()
+            plt.show()
         
         # if idx == self.patches_per_batch-1:
         #     self._resample_batch()
         
+        # print(f'loading from: {patch_path}')
         
-        # print(patch.shape)
-        
-        # print(dense_label.shape)
+        # print(f'dataset patch shape: {patch.shape}')
+        # assert patch.shape == (1,128,240,240), f'{patch.shape},  {patch_path}'
+        # print(f'dataset label shape: {downsampled_label.shape}')
+        # print(downsampled_label.shape)
         # print('-----')
-        return patch, dense_label, global_coords
+        return patch, downsampled_label, global_coords
 
 
 
@@ -220,17 +215,18 @@ if __name__ == '__main__':
     
     # Create dataset with patches_per_batch parameter
     dataset = PatchTomoDataset(
-        blob_sigma=3,
-        sigma_scale=1,
+        blob_sigma=69,
+        sigma_scale=0.7,
         downsampling_factor=16,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
+        tomo_id_list=['tomo_d7475d'],
         transform = None,
     )
     
     # DataLoader will handle batching normally
     dataloader = DataLoader(
         dataset, 
-        batch_size=128,  # This will batch the patches_per_batch samples
+        batch_size=4,  # This will batch the patches_per_batch samples
         shuffle=True, 
         pin_memory=True,
         num_workers=1, 
@@ -255,7 +251,8 @@ if __name__ == '__main__':
             total_pixels = labels.numel()
             
             # print(f"Batch {batch_idx}: {positive_pixels}/{total_pixels} positive pixels ({positive_pixels/total_pixels*100:.2f}%)")
-            
+            # print(patches.shape)
+            # print(labels.shape)
             
             num_bytes = patches.numel() * patches.element_size()
             main_mb = num_bytes / (1024 * 1024)
