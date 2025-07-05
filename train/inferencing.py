@@ -26,12 +26,12 @@ logging.basicConfig(level=logging.DEBUG,
 
 
 # Configuration Parameters
-MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\fpn_curriculum/run2\best.pt'
+MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\strong_aug/med/run1\best.pt'
 MASTER_TOMO_PATH = Path.cwd() / 'original_data/train'
 ORIGINAL_DATA_PATH = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train')
 GROUND_TRUTH_CSV = r'original_data\train_labels.csv'
 OUTPUT_DIR = Path('inference_results')
-OUTPUT_CSV_NAME = 'run2fpn.csv'
+OUTPUT_CSV_NAME = 'strong_aug_run1_cv.csv'
 
 #60,30,10,2,1
 #60:1
@@ -41,20 +41,25 @@ OUTPUT_CSV_NAME = 'run2fpn.csv'
 # Dataset Split Configuration
 tomo_id_list = [dir.name for dir in MASTER_TOMO_PATH.iterdir() if dir.is_dir()]
 train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.95, test_size=0.05, random_state=42)
-# val_id_list = val_id_list[:len(val_id_list):]
-val_id_list = train_id_list[:len(train_id_list)//5*2:6]  
+val_id_list = val_id_list[:len(val_id_list):5]
+# val_id_list = train_id_list[:len(train_id_list):30]  
 # val_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :4]
 # val_id_list = ['tomo_d7475d']
 
 # Inference Parameters
-BATCH_SIZE = 8
-PATCH_SIZE = 96
-OVERLAP = 0.25
-VOXEL_SPACING = 15
+DOWNSAMPLING_FACTOR = 16
+BATCH_SIZE = 1
+PATCH_SIZE = (160,288,288)
+OVERLAP = 0.5
+VOXEL_SPACING = 16
 THRESHOLD_ANGSTROMS = 1000
-THRESHOLD_VOXELS = THRESHOLD_ANGSTROMS / VOXEL_SPACING
-PRUNING_RADIUS = 16
-CONF_THRESHOLDS = np.arange(0.45, 0.95, 0.01)
+# Update the threshold calculation
+THRESHOLD_VOXELS = THRESHOLD_ANGSTROMS / (VOXEL_SPACING * DOWNSAMPLING_FACTOR)
+
+# Update the pruning radius 
+PRUNING_RADIUS = 3  #this should be in downscaled space
+
+CONF_THRESHOLDS = np.arange(0.15, 0.95, 0.01)
 BETA = 2
 
 # Optimization Parameters
@@ -78,7 +83,7 @@ def load_tomogram(src_path):
     return torch.as_tensor(tomo_normalized, dtype=torch.float16)
 
 def load_ground_truth(csv_path, tomo_ids):
-    """Load ground truth motor locations."""
+    """Load ground truth motor locations, optionally downsampled."""
     df = pd.read_csv(csv_path)
     gt_dict = {}
     for tomo_id in tomo_ids:
@@ -86,9 +91,16 @@ def load_ground_truth(csv_path, tomo_ids):
         motors = []
         for _, row in tomo_rows.iterrows():
             if row['Motor axis 0'] != -1:
-                motors.append([row['Motor axis 0'], row['Motor axis 1'], row['Motor axis 2']])
+                # Apply downsampling to ground truth coordinates
+                motor_coords = [
+                    row['Motor axis 0'] / DOWNSAMPLING_FACTOR,
+                    row['Motor axis 1'] / DOWNSAMPLING_FACTOR, 
+                    row['Motor axis 2'] / DOWNSAMPLING_FACTOR
+                ]
+                motors.append(motor_coords)
         gt_dict[tomo_id] = motors
     return gt_dict
+
 
 
 def prune_nearby_predictions_fast(heatmap: np.ndarray, r=16, min_thresh=0.55):

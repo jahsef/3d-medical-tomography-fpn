@@ -46,100 +46,69 @@ def soft_dice_score(pred, target, smooth=1e-6):
    
    return sum(dice_scores) / len(dice_scores)  # Return average dice score
 
-def comprehensive_heatmap_metric(pred, target, voxel_threshold=60):
+def comprehensive_heatmap_metric(pred, target, distance_threshold=60):
     """
-    Simplified and numerically stable heatmap evaluation.
+    Fast and simple heatmap evaluation metric.
     
     Args:
         pred: Predicted heatmap [B, C, H, W, D] or [B, H, W, D]
         target: Target heatmap (same shape as pred)
-        voxel_threshold: Distance threshold in voxels (default: 60)
+        distance_threshold: Distance threshold in voxels
     
     Returns:
         score: Combined metric score [0, 1] where higher is better
     """
     pred = torch.sigmoid(pred)
-    eps = 1e-8
     batch_size = pred.shape[0]
     
-    # Move to CPU and ensure float32
-    pred_cpu = pred.cpu().float()
-    target_cpu = target.cpu().float()
+    # Move to CPU first
+    pred = pred.cpu()
+    target = target.cpu()
     
-    # Flatten spatial dimensions
-    pred_flat = pred_cpu.view(batch_size, -1)
-    target_flat = target_cpu.view(batch_size, -1)
+    # Flatten spatial dimensions for vectorized operations
+    pred_flat = pred.view(batch_size, -1)
+    target_flat = target.view(batch_size, -1)
     
-    # Add small epsilon to prevent division by zero
-    pred_flat = pred_flat + eps
-    target_flat = target_flat + eps
+    # 1. Correlation (vectorized across batch)
+    pred_mean = pred_flat.mean(dim=1, keepdim=True)
+    target_mean = target_flat.mean(dim=1, keepdim=True)
     
-    batch_scores = []
+    pred_centered = pred_flat - pred_mean
+    target_centered = target_flat - target_mean
     
-    for i in range(batch_size):
-        pred_sample = pred_flat[i]
-        target_sample = target_flat[i]
-        
-        # 1. Correlation with numerical stability checks
-        pred_mean = pred_sample.mean()
-        target_mean = target_sample.mean()
-        
-        pred_centered = pred_sample - pred_mean
-        target_centered = target_sample - target_mean
-        
-        numerator = (pred_centered * target_centered).sum()
-        pred_std = torch.sqrt((pred_centered ** 2).sum())
-        target_std = torch.sqrt((target_centered ** 2).sum())
-        
-        # Check for zero variance
-        if pred_std < eps or target_std < eps:
-            correlation = 0.0
-        else:
-            correlation = numerator / (pred_std * target_std + eps)
-            correlation = torch.clamp(correlation, -1.0, 1.0).item()
-        
-        # 2. Simplified spatial accuracy using peak locations
-        pred_peak_idx = pred_sample.argmax()
-        target_peak_idx = target_sample.argmax()
-        
-        # Convert flat indices to coordinates
-        spatial_shape = pred_cpu.shape[2:]  # Remove batch and channel dims
-        
-        def flat_to_coords(flat_idx, shape):
-            coords = []
-            for dim_size in reversed(shape):
-                coords.append(flat_idx % dim_size)
-                flat_idx = flat_idx // dim_size
-            return torch.tensor(coords[::-1], dtype=torch.float32)
-        
-        pred_coords = flat_to_coords(pred_peak_idx.item(), spatial_shape)
-        target_coords = flat_to_coords(target_peak_idx.item(), spatial_shape)
-        
-        # Euclidean distance between peaks
-        peak_distance = torch.norm(pred_coords - target_coords).item()
-        spatial_score = max(0.0, 1.0 - peak_distance / voxel_threshold)
-        
-        # 3. Simplified confidence based on peak sharpness
-        pred_max = pred_sample.max().item()
-        pred_mean_val = pred_sample.mean().item()
-        
-        if pred_mean_val < eps:
-            confidence = 0.0
-        else:
-            sharpness = pred_max / pred_mean_val
-            confidence = min(1.0, sharpness / 10.0)  # Normalize to [0,1]
-        
-        # 4. Combine metrics with weights
-        score = 0.5 * correlation + 0.3 * spatial_score + 0.2 * confidence
-        score = max(0.0, min(1.0, score))  # Clamp to [0,1]
-        
-        batch_scores.append(score)
+    numerator = (pred_centered * target_centered).sum(dim=1)
+    pred_std = pred_centered.norm(dim=1)
+    target_std = target_centered.norm(dim=1)
     
-    # Return average across batch, handle empty batch
-    if not batch_scores:
-        return 0.0
+    # Avoid division by zero and NaN
+    correlation = numerator / (pred_std * target_std + 1e-8)
+    correlation = torch.clamp(correlation, -1.0, 1.0)
+    correlation = torch.where(torch.isnan(correlation), torch.zeros_like(correlation), correlation)
     
-    return sum(batch_scores) / len(batch_scores)
+    # 2. Peak distance (simplified - just flat index distance)
+    pred_peaks = pred_flat.argmax(dim=1)
+    target_peaks = target_flat.argmax(dim=1)
+    
+    # Normalize distance by total voxels for rough spatial score
+    total_voxels = pred_flat.shape[1]
+    peak_distance = torch.abs(pred_peaks - target_peaks).float()
+    spatial_score = torch.clamp(1.0 - peak_distance / distance_threshold, 0.0, 1.0)
+    
+    # 3. Peak sharpness (confidence measure)
+    pred_max = pred_flat.max(dim=1)[0]
+    pred_mean_val = pred_flat.mean(dim=1)
+    
+    # Avoid division by zero and NaN
+    sharpness = pred_max / (pred_mean_val + 1e-8)
+    confidence = torch.clamp(sharpness / 10.0, 0.0, 1.0)
+    confidence = torch.where(torch.isnan(confidence), torch.zeros_like(confidence), confidence)
+    
+    # 4. Combine metrics (vectorized)
+    score = 0.5 * correlation + 0.3 * spatial_score + 0.2 * confidence
+    score = torch.clamp(score, 0.0, 1.0)
+    score = torch.where(torch.isnan(score), torch.zeros_like(score), score)
+    
+    return score.mean().item()
 
 def topk_accuracy(pred, target, k_values=[1, 5, 10, 50]):
     """Check if target peak is in top-k predictions for each sample across multiple k values"""
@@ -252,7 +221,7 @@ class Trainer:
                 topk_tracker.update(batch_topk, patches.shape[0])
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100)
+            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100)
             
             # Step optimizer after accumulating gradients
             if (batch_idx + 1) % self.batches_per_step == 0:
@@ -260,8 +229,9 @@ class Trainer:
                 # Log step loss for graphing
                 self.step_losses.append(conf_loss.item())
                 self.step_count += 1
+                self.scheduler.step()
                     
-            self.scheduler.step()
+            
 
             conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
 

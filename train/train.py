@@ -110,8 +110,21 @@ class BCETopKLoss(nn.Module):
         # print(bce_reshaped.shape)
         topk_values = torch.topk(bce_reshaped, self.k, dim=1)[0]  # [B, k]
         return topk_values.mean()
+
+
+class WeightedBCELoss(nn.Module):
+    def __init__(self, pos_weight=10.0):
+        super().__init__()
+        self.pos_weight = pos_weight
     
-    
+    def forward(self, inputs, targets):
+        # Weight based on target values - higher targets get more weight
+        weights = 1.0 + (targets * self.pos_weight)
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        weighted_loss = bce_loss * weights
+        return weighted_loss.mean()    
+
+
 if __name__ == "__main__":
     
     def get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps):
@@ -124,45 +137,25 @@ if __name__ == "__main__":
         
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    # intensity
-    # rotation
-    # scale
-    # spatial
-    
+
     train_transform = monai.transforms.Compose([
-        #mild intensity
-        transforms.RandGaussianNoised(keys = 'patch' ,dtype = torch.float16, prob = 0.33, std = 0.05),
-        transforms.RandShiftIntensityd(keys = 'patch', offsets = 0.1,safe = True, prob = 0.33, ),
-        #slightly less mild intensity
-        # transforms.RandGaussianSmoothd(keys="patch", sigma_x=(0.025, 0.075), sigma_y=(0.025, 0.075), sigma_z=(0.025, 0.075), prob=0.33),
-        transforms.RandAdjustContrastd(keys="patch", gamma=(0.9, 1.15), prob=0.33),
+        #seems to be a sweetspot at least for single sample, dont use for larger datasets prob
+        # transforms.RandGaussianNoised(keys='patch', dtype=torch.float16, prob=1, std=0.02),
+        # transforms.RandShiftIntensityd(keys='patch', offsets=0.02, safe=True, prob=1),
+        # transforms.RandAdjustContrastd(keys="patch", gamma=(0.98, 1.02), prob=1),
+        # transforms.RandScaleIntensityd(keys="patch", factors=0.02, prob=1),
+
         
-        #mild spatial/rotational
-        transforms.RandRotate90d(keys=["patch", "label"], prob=0.5),
+        #these are probably sufficient
+        # transforms.RandRotate90d(keys=["patch", "label"], prob=0.5, spatial_axes=[1,2]),
+        # transforms.RandFlipd(keys=['patch', 'label'], prob=0.5, spatial_axis=[0,1,2]),
+        # transforms.SpatialPadd(keys=['patch', 'label'], spatial_size=[168,304,304], mode='reflect'),
+        # transforms.RandSpatialCropd(keys=['patch', 'label'], roi_size=[160,288,288], random_center=True),
         
-        transforms.SpatialPadd(keys = ['patch', 'label'], spatial_size= [164,296,296], mode = 'reflect'),
-        transforms.RandSpatialCropd(keys = ['patch', 'label'], roi_size = [160,288,288], random_center=True), 
-        
-        #slightly more aggressive ones below
-        transforms.RandRotated(keys = ['patch', 'label'], range_x=0.25, range_y=0.25, range_z=0.25, prob=0.30, mode='trilinear'),
-        transforms.RandZoomd(keys=['patch', 'label'], min_zoom=0.95, max_zoom=1.05, prob=0.25, mode='trilinear')
+        # transforms.RandRotated(keys=['patch', 'label'], range_x=0.33, range_y=0.33, range_z=0.33, prob=0.25, mode=['trilinear', 'nearest']),
+        # transforms.RandZoomd(keys=['patch', 'label'], min_zoom = 0.9, max_zoom = 1.1, prob = 0.25, mode = ['trilinear', 'nearest']),
     ])
-    
-    # train_transform = None
-    
-    
-    #TODO visualization/logging
-    #log f1 beta weighted stuff with precision + recall too
-    #plot lr vs epoch
-    #log some basic predictions + slices + ground_truth for a few key examples
-    #maybe we can run predictions on a few tomos at the end of training then show ground truth vs prediction?
 
-    #apply max, min, and average pooling to get some good visualizations
-    #over depth dimension
-    #of base image and convolutions??
-
-    #plot predicted on a certain slice, also plot ground truth on the same slice or another one if needed
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # torch.manual_seed(42)
@@ -173,80 +166,69 @@ if __name__ == "__main__":
     # torch.backends.cudnn.benchmark = False
     # torch.use_deterministic_algorithms(True)
 
-    model = MotorIdentifier(dropout_p= 0.1, norm_type="gn")
+    model = MotorIdentifier(dropout_p= 0.15, norm_type="gn")
     model.print_params()
     # time.sleep(1000)
-    
-    # model = TrivialModel()
-    
-    print('loading state dict into model\n'*20)
-    model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\resnet_backbone/run5\best.pt'))
-    
-    # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    # print(f"Prefreeze Trainable params: {trainable_params}")
-    # for param in model.encoder.parameters():
-    #     param.requires_grad = False
-    
-    # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    # print(f"Postfreeze Trainable params: {trainable_params}")
 
-    save_dir = './models/heatmap/resnet_backbone/run6/'
+
+    # print('loading state dict into model\n'*20)
+    # model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best.pt'))
+
+
+    save_dir = './models/fpn/small/noaug/5subset/'
     
     os.makedirs(save_dir, exist_ok= True)#just so we dont accidentally overwrite stuff
     
     master_tomo_path = Path.cwd() / 'patch_pt_data'
     tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
-    # tomo_id_list = tomo_id_list[:len(tomo_id_list)]
-    
-    train_id_list, val_id_list = train_test_split(tomo_id_list, train_size= 0.95, test_size= 0.05, random_state= 42)
-    # train_id_list = train_id_list[:len(train_id_list)//10]
-    # train_id_list = train_id_list[:1]
-    # train_id_list = ['tomo_d7475d']
-    # train_id_list = ['tomo_00e047']
 
+    train_id_list, val_id_list = train_test_split(tomo_id_list, train_size= 0.95, test_size= 0.05, random_state= 42)
+    train_id_list = train_id_list[:len(train_id_list)//10]
+    # train_id_list = ['tomo_d7475d']
+    
     # val_id_list = val_id_list[:len(val_id_list)//10]
     val_id_list =    []
-
-    epochs = 10
+    # val_id_list = ['tomo_d7475d']
     
-    lr = 1e-4
+    epochs = 25
+    
+    lr = 1e-3
     batch_size = 1
     batches_per_step = 2 #for gradient accumulation (every n batches we step)
-    steps_per_epoch = 384
+    steps_per_epoch = 50
     
-    blob_sigma = 40 #this is in real coord space not downsampled
-    weight_sigma_scale = 0.7#larger is prolly fine for downscaled heatmaps
+    angstrom_blob_sigma = 200 #this is in real coord space not downsampled
+    #gaussian edge weighting basically
+    weight_sigma_scale = 1.5 #larger is prolly fine for downscaled heatmaps
     downsampling_factor = 16
-    # optimizer = torch.optim.AdamW(model.parameters(), lr = lr, weight_decay= 5e-4)
+    print(f'TOTAL EXPECTED PATCHES TRAINED: {batch_size*batches_per_step*steps_per_epoch*epochs}')
     
-    # Parameter grouping for differential learning rates
-    backbone_params = list(model.stem.parameters()) + \
-                    list(model.enc_2.parameters()) + \
-                    list(model.enc_4.parameters()) + \
-                    list(model.enc_8.parameters()) + \
-                    list(model.enc_16.parameters()) + \
-                    list(model.enc_32.parameters())
+    total_steps = epochs * steps_per_epoch
+    warmup_steps = int(0.1 * total_steps)#% of steps warmup, 5% is about 2 epochs
+    print(f'WARMUP STEPS: {warmup_steps}')
 
-    fpn_params = list(model.fpn_2_block.parameters()) + list(model.fpn_2_conv.parameters()) + \
-                list(model.fpn_4_block.parameters()) + list(model.fpn_4_conv.parameters()) + \
-                list(model.fpn_8_block.parameters()) + list(model.fpn_8_conv.parameters()) + \
-                list(model.fpn_32_block.parameters()) + list(model.fpn_32_conv.parameters()) + \
-                list(model.enc_16_conv.parameters()) + list(model.enc_32_conv.parameters())
 
+
+    # Collect parameter groups
+    backbone_params = list(model.stem.parameters()) + list(model.backbone.parameters())
+    decoder_params = list(model.decoder.parameters())
     head_params = list(model.head.parameters())
 
     # Optimizer with differential learning rates
     optimizer = torch.optim.AdamW([
-        {'params': backbone_params, 'lr': lr/10},
-        {'params': fpn_params + head_params, 'lr': lr}  # Higher lr for new layers
+        {'params': backbone_params, 'lr': lr/10},      # Lower LR for backbone
+        {'params': decoder_params, 'lr': lr},            # Normal LR for decoder
+        {'params': head_params, 'lr': lr}                # Normal LR for head
     ], weight_decay=1e-4)
-        
+
+
+
     #we only load optimizer state when basically everything we are doing is the same
     #optimizer state has a bunch of running avgs
     
     # print('Loading state dict into optimizer')
     # optimizer_state = torch.load(
-    #     r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\heatmap\resnet_backbone/run1\best_optimizer.pt', 
+    #     r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best_optimizer.pt', 
     #     map_location=device
     # )
     
@@ -257,18 +239,22 @@ if __name__ == "__main__":
     #         if torch.is_tensor(v):
     #             state[k] = v.to(device)
     
-    # conf_loss_fn = FocalLoss(alpha = 1, gamma = 1)#alpha is pos weight, gamma is focusing param
-    
-    # conf_loss_fn = SigmoidMSE()
 
-    # WARNING WARNING DONT USE GAMMA FOR NOW THE (1-P) TERM IS FOR CLASSIFICATION NOT HEATMAP
     # conf_loss_fn = nn.BCEWithLogitsLoss()
     
-    conf_loss_fn = BCETopKLoss(k = 900)
+    # conf_loss_fn = BCETopKLoss(k = 1000)
+    
+    #1000 pos weight might not be that crazy
+    #since 160x288x288 patches, gauss std dev of 12.5 with 1 motor
+    #2.5 std devs of the blob covers about 30k voxels
+    #so with 13.3m pixels total 1k weight isnt super crazy
+    
+    conf_loss_fn = WeightedBCELoss(pos_weight=420)
 
     
+    
     train_dataset = PatchTomoDataset(
-        blob_sigma=blob_sigma,
+        angstrom_blob_sigma=angstrom_blob_sigma,
         sigma_scale=weight_sigma_scale,
         downsampling_factor= downsampling_factor,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
@@ -277,7 +263,7 @@ if __name__ == "__main__":
     )
     
     val_dataset = PatchTomoDataset(
-        blob_sigma=blob_sigma,
+        angstrom_blob_sigma=angstrom_blob_sigma,
         sigma_scale=weight_sigma_scale,
         downsampling_factor= downsampling_factor,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
@@ -286,8 +272,8 @@ if __name__ == "__main__":
     )
     
     pin_memory = True
-    num_workers = 8
-    val_workers = 1
+    num_workers =5
+    val_workers = 1 
     persistent_workers = True
     prefetch_factor = 1
     
@@ -299,15 +285,8 @@ if __name__ == "__main__":
 
     val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle = False, pin_memory =pin_memory, num_workers=val_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
 
-    
-    #lower for early learning, higher to focus on hard examples when fine tuning
-    
-    print(f'TOTAL EXPECTED PATCHES TRAINED: {batch_size*batches_per_step*steps_per_epoch*epochs}')
-    steps_per_epoch = len(train_loader)
-    total_steps = epochs * steps_per_epoch
-    
-    warmup_steps = int(0.2 * total_steps)#% of steps warmup, 5% is about 2 epochs
-    
+
+
                 
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps= warmup_steps, total_steps= total_steps)
 

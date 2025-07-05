@@ -115,7 +115,7 @@ class ResBlock3d(nn.Module):
         return F.silu(self.features(x) + self.skip(x), inplace = True)   
     
 class PreActResBlock3d(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1, kernel_size=3, norm_type="gn", target_channels_per_group=4):
+    def __init__(self, in_channels, out_channels, stride=1, kernel_size=3, norm_type="gn", target_channels_per_group=4, dilation = 1):
         """padding will always be dynamic to keep spatial size the same"""
         super().__init__()
         fart = kernel_size - 1
@@ -133,7 +133,7 @@ class PreActResBlock3d(nn.Module):
             nn.SiLU(inplace=True),
             #dropout here
             nn.Conv3d(out_channels, out_channels, kernel_size=kernel_size, 
-                      padding=padding, bias=False),
+                      padding=padding, bias=False, dilation= dilation),
         )
         
         # Skip connection
