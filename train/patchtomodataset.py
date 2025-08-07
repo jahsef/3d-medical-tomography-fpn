@@ -35,7 +35,7 @@ def downsample_with_max_weighting(dense_label, downsampling_factor):
 
 
 class PatchTomoDataset(torch.utils.data.Dataset):
-    def __init__(self, angstrom_blob_sigma:float,sigma_scale:float,downsampling_factor:int,patch_index_path: Path, transform=None, tomo_id_list: list[str] = None):
+    def __init__(self, angstrom_blob_sigma:float,sigma_scale:float,downsampling_factor:int,patch_index_path: Path, dataset_path:Path, labels_path:Path, transform=None, tomo_id_list: list[str] = None):
         """
         Args:
             patch_index_path (Path): self explanatory
@@ -45,9 +45,9 @@ class PatchTomoDataset(torch.utils.data.Dataset):
             tomo_id_list: list of tomograms(SHOULD BE TOMO IDS ONLY) we want to be in our patch based dataset 
         """
         super().__init__()
-        self.dataset_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\patch_pt_data')
+        self.dataset_path = dataset_path
         
-        self.labels_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv')
+        self.labels_path = labels_path
         self.labels_csv = pd.read_csv(self.labels_path)
         
         self.index_df = pd.read_csv(patch_index_path)
@@ -296,7 +296,7 @@ if __name__ == '__main__':
         sigma_scale=1.5,
         downsampling_factor=16,
         patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
-        tomo_id_list=['tomo_d7475d'],
+        # tomo_id_list=['tomo_d7475d'],
         transform = train_transform,
     )
     

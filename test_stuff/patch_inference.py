@@ -19,7 +19,7 @@ from model_defs.motoridentifier import MotorIdentifier
 patch_dir = Path.cwd() / 'patch_pt_data' / 'tomo_d7475d'
 device = torch.device('cuda')
 model = MotorIdentifier().to(device)
-model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn/small/noaug/30subset/best.pt'))
+model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_optimized/small/noaug/single/best.pt'))
 model.eval()
 
 DOWNSAMPLING_FACTOR = 16

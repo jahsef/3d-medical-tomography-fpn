@@ -26,12 +26,12 @@ logging.basicConfig(level=logging.DEBUG,
 
 
 # Configuration Parameters
-MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\strong_aug/med/run1\best.pt'
+MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models/relabel/full/lite_augs/10m3/best.pt'
 MASTER_TOMO_PATH = Path.cwd() / 'original_data/train'
 ORIGINAL_DATA_PATH = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train')
-GROUND_TRUTH_CSV = r'original_data\train_labels.csv'
+GROUND_TRUTH_CSV = r'original_data\relabel.csv'
 OUTPUT_DIR = Path('inference_results')
-OUTPUT_CSV_NAME = 'strong_aug_run1_cv.csv'
+OUTPUT_CSV_NAME = 'fart.csv'
 
 #60,30,10,2,1
 #60:1
@@ -40,15 +40,15 @@ OUTPUT_CSV_NAME = 'strong_aug_run1_cv.csv'
 
 # Dataset Split Configuration
 tomo_id_list = [dir.name for dir in MASTER_TOMO_PATH.iterdir() if dir.is_dir()]
-train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.95, test_size=0.05, random_state=42)
-val_id_list = val_id_list[:len(val_id_list):5]
-# val_id_list = train_id_list[:len(train_id_list):30]  
+train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.85, test_size=0.15, random_state=42)
+# val_id_list = val_id_list[:len(val_id_list):]
+val_id_list = train_id_list[:len(train_id_list):20]  
 # val_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :4]
 # val_id_list = ['tomo_d7475d']
 
 # Inference Parameters
 DOWNSAMPLING_FACTOR = 16
-BATCH_SIZE = 1
+BATCH_SIZE = 4
 PATCH_SIZE = (160,288,288)
 OVERLAP = 0.5
 VOXEL_SPACING = 16
@@ -57,14 +57,14 @@ THRESHOLD_ANGSTROMS = 1000
 THRESHOLD_VOXELS = THRESHOLD_ANGSTROMS / (VOXEL_SPACING * DOWNSAMPLING_FACTOR)
 
 # Update the pruning radius 
-PRUNING_RADIUS = 3  #this should be in downscaled space
+PRUNING_RADIUS = 5  #this should be in downscaled space
 
 CONF_THRESHOLDS = np.arange(0.15, 0.95, 0.01)
 BETA = 2
 
 # Optimization Parameters
 NUM_LOADING_THREADS = min(12, mp.cpu_count())
-TOMOGRAM_QUEUE_SIZE = 2
+TOMOGRAM_QUEUE_SIZE = 3
 NORMALIZATION_CONSTANTS = (0.479915, 0.224932)
 
 def load_tomogram(src_path):
