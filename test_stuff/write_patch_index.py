@@ -31,7 +31,7 @@ def write_per_tomo_dict(tomo_folder:Path):
 
 if __name__ == '__main__':
     tomo_dict = {}
-    folder_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\relabel_data')
+    folder_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\patch_pt_data')
     tomo_folders = [x for x in folder_path.iterdir() if x.is_dir()]
     
     with Pool(processes=12) as pool:
@@ -59,7 +59,7 @@ if __name__ == '__main__':
             table.append(row)
         
     df = pd.DataFrame(data = table, columns=['tomo_id', 'patch_id', 'has_motor'])    
-    df.to_csv(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_relabel_index.csv', index = False)
+    df.to_csv(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv', index = False)
 
     # df.add()
 # if __name__ == '__main__':

@@ -183,17 +183,8 @@ class Trainer:
         
         with torch.amp.autocast(device_type="cuda"):
             outputs = self.model(patches)
-            
-        conf_loss = self.conf_loss_fn(outputs.float(), labels)
-        
-        if torch.isnan(outputs).any() or torch.isinf(outputs).any():
-            print(f"NaN/Inf in model outputs: nan={torch.isnan(outputs).sum()}, inf={torch.isinf(outputs).sum()}")
-            print(f"Output range: {outputs.min():.6f} to {outputs.max():.6f}")
-            
-        if torch.isnan(conf_loss).any() or torch.isinf(conf_loss).any():
-            print(f"NaN/Inf in model outputs: nan={torch.isnan(conf_loss).sum()}, inf={torch.isinf(conf_loss).sum()}")
-            print(f"Output range: {conf_loss.min():.6f} to {conf_loss.max():.6f}")
-        
+            conf_loss = self.conf_loss_fn(outputs, labels)
+
         return conf_loss, outputs
     
     def _train_one_epoch(self, epoch_index):
@@ -230,9 +221,7 @@ class Trainer:
                 topk_tracker.update(batch_topk, patches.shape[0])
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100)
-            
-
+            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100)
             
             # Step optimizer after accumulating gradients
             if (batch_idx + 1) % self.batches_per_step == 0:

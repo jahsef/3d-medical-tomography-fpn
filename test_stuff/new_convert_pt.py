@@ -263,17 +263,17 @@ def write_whole_directory(
 
 if __name__ == '__main__':
     src_root = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train')
-    dst_root = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\relabel_data')
+    dst_root = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\patch_pt_data')
     dst_root.mkdir(parents=False, exist_ok=True)
-    csv_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\relabel.csv')
+    csv_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\original_data\train_labels.csv')
     
     # Parameters
     patch_size = (160, 288, 288)
     stride = tuple([p//4 for p in patch_size])
     
     # Sampling parameters
-    positive_keep_fraction = 0.275
-    global_negative_keep_fraction = 0.0006
+    positive_keep_fraction = 0.25
+    global_negative_keep_fraction = 0.001
     min_negative_samples = 1
     global_max_motors = 20
     patch_max_motors = 1

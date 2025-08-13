@@ -6,5 +6,3 @@
 normalized_zarr_data
 *.pkl
 *.npy
-models/
-inference_results/
