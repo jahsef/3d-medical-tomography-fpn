@@ -179,7 +179,9 @@ if __name__ == "__main__":
     #             state[k] = v.to(device)
     
 
-
+    # conf_loss_fn = nn.BCEWithLogitsLoss()
+    
+    # conf_loss_fn = BCETopKLoss(k = 1000)
     
     #1000 pos weight might not be that crazy
     #since 160x288x288 patches, gauss std dev of 12.5 with 1 motor
@@ -194,6 +196,7 @@ if __name__ == "__main__":
         angstrom_blob_sigma=angstrom_blob_sigma,
         sigma_scale=weight_sigma_scale,
         downsampling_factor= downsampling_factor,
+        patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         transform = train_transform,
         tomo_id_list= train_id_list
     )
@@ -202,6 +205,7 @@ if __name__ == "__main__":
         angstrom_blob_sigma=angstrom_blob_sigma,
         sigma_scale=weight_sigma_scale,
         downsampling_factor= downsampling_factor,
+        patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         transform = None,
         tomo_id_list= val_id_list
     )
