@@ -36,94 +36,34 @@ import monai
 from monai import transforms
 
 
-def write_tomos(list_val_paths):
-    """
-    writes tomos if they dont exist, used for validation
-    """
-    IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.tif', '.tiff'}
-    
-    transform = t.Compose([
-    t.ToDtype(torch.float16, scale=True),
-    t.Normalize((0.479915,), (0.224932,))
-    ])
-    
-    dst = Path.cwd() / 'normalized_val_fulltomo'
-    for patches_path in list_val_paths:
-        path:Path
-
-        tomo_id = patches_path.name
-        
-        print(tomo_id)
-        
-        tomo_pt_path = dst / Path(str(tomo_id) + '.pt')
-        
-        if tomo_pt_path.exists():
-            continue
-        
-        print(f'Writing full tomogram: {patches_path.name}')
-        #find original images path
-        images_path = Path.cwd() / 'original_data/train' / patches_path.name
-        
-        files = [
-            f for f in images_path.rglob('*')
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTS
-        ]
-        
-        files = natsorted(files, key=lambda x: x.name)
-        
-        imgs = [iio.imread(file, mode="L") for file in files]
-        
-        tomo_array = np.stack(imgs)
-        
-        # Convert to tensor and normalize
-        tomo_tensor = torch.as_tensor(tomo_array)
-        tomo_tensor = transform(tomo_tensor)
-        
-        torch.save(tomo_tensor, tomo_pt_path)
-
 import torch.nn.functional as F
 
-class FocalLoss(nn.Module):
-    
-    def __init__(self, alpha=0.25, gamma=2.0):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        
-    def forward(self, inputs, targets):
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * torch.abs(targets-pt)**self.gamma * bce_loss
-        return focal_loss.mean()
-    
-class BCETopKLoss(nn.Module):
-    def __init__(self, k=20):
-        super().__init__()
-        self.k = k
-    
-    def forward(self, inputs, targets):
-        # print(f'input shape : {inputs.shape}')
-        # print(f'targets shape : {targets.shape}')
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        bce_reshaped = bce_loss.view(bce_loss.size(0), -1)  # [B, H*W*D]
-        # print(bce_loss.shape)
-        # print(bce_reshaped.shape)
-        topk_values = torch.topk(bce_reshaped, self.k, dim=1)[0]  # [B, k]
-        return topk_values.mean()
 
 
 class WeightedBCELoss(nn.Module):
-    def __init__(self, pos_weight=10.0):
+    def __init__(self, pos_weight=10.0, reduction = 'mean'):
         super().__init__()
         self.pos_weight = pos_weight
+        self.reduction = reduction
     
     def forward(self, inputs, targets):
         # Weight based on target values - higher targets get more weight
         weights = 1.0 + (targets * self.pos_weight)
         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
         weighted_loss = bce_loss * weights
-        return weighted_loss.mean()    
+        
+        return weighted_loss.mean() if self.reduction == 'mean' else weighted_loss
 
+class FocalLoss(nn.Module):
+    def __init__(self, pos_weight, gamma=1.0):
+        super().__init__()
+        self.gamma = gamma
+        self.weighted_bce = WeightedBCELoss(pos_weight=pos_weight, reduction='none')
+    def forward(self, inputs, targets):
+        bce_loss = self.weighted_bce(inputs, targets)
+        pt = torch.exp(-bce_loss)
+        focal_loss = torch.abs(targets-pt)**self.gamma * bce_loss
+        return focal_loss.mean()
 
 if __name__ == "__main__":
     
