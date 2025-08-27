@@ -74,9 +74,9 @@ if __name__ == "__main__":
         # Training
         'epochs': 10,
         'lr': 1e-3,
-        'batch_size': 2,
-        'batches_per_step': 1,
-        'steps_per_epoch': 50,
+        'batch_size': 1,
+        'batches_per_step': 2,
+        'steps_per_epoch': 16,
         
         # Data
         'angstrom_blob_sigma': 200,
@@ -94,9 +94,9 @@ if __name__ == "__main__":
         'warmup_ratio': 0.1,
         
         # DataLoader
-        'num_workers': 4,
-        'val_workers': 2,
-        'pin_memory': True,
+        'num_workers': 1,
+        'val_workers': 1,
+        'pin_memory': False,
         'persistent_workers': True,
         'prefetch_factor': 1,
         
@@ -104,17 +104,18 @@ if __name__ == "__main__":
         'save_dir': './models/test/',
         
         # Other
+        'seed': 42,
         'topk_values': [10, 50, 300],
         'save_period': 1,
         
         # Feature toggles
         'enable_augmentation': False,
-        'enable_deterministic': True,
+        'enable_deterministic': False,  # Disabled due to CUDA upsample_trilinear3d_backward_out_cuda non-deterministic implementation
         'load_pretrained': False,
         'debug_mode': False,
         'use_subset': True,
         'subset_fraction': 0.1,
-        'empty_validation': True,
+        'empty_validation': False,
         
         # Augmentation settings (only used if enabled)
         'augmentation': {
@@ -172,12 +173,14 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    # Set random seeds for reproducibility
+    torch.manual_seed(CONFIG['seed'])
+    torch.cuda.manual_seed(CONFIG['seed'])
+    torch.cuda.manual_seed_all(CONFIG['seed'])
+    np.random.seed(CONFIG['seed'])
+    
     # Set deterministic behavior if enabled
     if CONFIG['enable_deterministic']:
-        torch.manual_seed(42)
-        torch.cuda.manual_seed(42)
-        torch.cuda.manual_seed_all(42)
-        np.random.seed(42)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True)
@@ -301,7 +304,7 @@ if __name__ == "__main__":
         scheduler=scheduler,
         conf_loss_fn=conf_loss_fn,
         device=device,
-        save_dir=save_dir,
+        run_dir=save_dir,
         topk_values=CONFIG['topk_values']
     )
     

@@ -61,7 +61,7 @@ def make_gp_stack(ch, num_blocks, groups, norm_type):
 
 class MotorIdentifier(nn.Module):
     
-    def __init__(self,initial_features = 8, dropout_p=0, norm_type="gn"):
+    def __init__(self,initial_features = 12, dropout_p=0, norm_type="gn"):
         super().__init__()
         self.dropout_p = dropout_p
         STEM_FEATURES = initial_features
@@ -72,19 +72,24 @@ class MotorIdentifier(nn.Module):
             nnblock.PreActResBlock3d(STEM_FEATURES*2, STEM_FEATURES*4, stride = 2),#1/4
             nnblock.PreActResBlock3d(STEM_FEATURES*4, STEM_FEATURES*8, stride = 2),#1/8
             nnblock.PreActResBlock3d(STEM_FEATURES*8, STEM_FEATURES*16, stride = 2),#1/16
-            nnblock.PreActResBlock3d(STEM_FEATURES*16, STEM_FEATURES*32, stride = 2),#1/32
         )
         self.head = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode=  'trilinear', align_corners=False),
-            nnblock.PreActResBlock3d(STEM_FEATURES*32,STEM_FEATURES*4, kernel_size=3),
-            nnblock.PreActResBlock3d(STEM_FEATURES*4,1, kernel_size=1)
+            nnblock.PreActResBlock3d(STEM_FEATURES*16,STEM_FEATURES*4, kernel_size=3),
+            # nnblock.PreActResBlock3d(STEM_FEATURES*4,1, kernel_size=1, target_channels_per_group=4)
+            nnblock.get_norm_layer(num_channels =STEM_FEATURES*4, norm_type = 'gn'),
+            nn.SiLU(inplace=True),
+            nn.Conv3d(STEM_FEATURES*4,1, kernel_size=1, bias = False)
         )
         
     def forward(self, x):
+        input_x = x
         assert not torch.isnan(x).any(), 'x nan yo'
         x = self.stem(x)
+        assert not torch.isnan(x).any(), f'stem nan: input min={input_x.min():.3f} max={input_x.max():.3f} mean={input_x.mean():.3f}'
         x = self.backbone(x)
+        assert not torch.isnan(x).any(), 'backbone nan'
         x = self.head(x)
+        assert not torch.isnan(x).any(), 'head nan'
         return x
 
 
