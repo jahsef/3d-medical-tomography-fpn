@@ -32,7 +32,7 @@ def get_norm_layer(norm_type, num_channels, target_channels_per_group=4, min_gro
         if num_groups is None or num_groups > num_channels or num_groups < 1:
             num_groups = 1
         if num_groups == 1:
-            print(f'WARNING get_norm_layer returned 1 failsafe')
+            print(f'WARNING get_norm_layer returned 1 failsafe for {num_channels} channels (target_channels_per_group={target_channels_per_group}, target_group_size={target_group_size})')
         return nn.GroupNorm(num_groups, num_channels)
     else:
         raise ValueError(f'Unsupported norm type: {norm_type}')
@@ -60,75 +60,10 @@ class BasicFCBlock(nn.Module):
         
     def forward(self,x):
         return self.block(x)
-        
-        
-class PreActResBlock2d(nn.Module):
-    """#TODO: MAKE STRUCTURE SIMILAR TO 3D FIRST CONV SHOULD BE FOR EXPANSION"""
-    #TODO: MAKE STRUCTURE SIMILAR TO 3D FIRST CONV SHOULD BE FOR EXPANSION
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-        
-        self.features = nn.Sequential(
-            nn.BatchNorm2d(in_channels),
-            nn.SiLU(inplace=True),
-            #dropout here
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, 
-                      padding=1, stride=stride, bias=False),
-            
-            nn.BatchNorm2d(in_channels),
-            nn.SiLU(inplace=True),
-            #dropout here
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, 
-                      padding=1, bias=False),
-        )
-        
-        # Skip connection
-        if in_channels != out_channels or stride != 1:
-            self.skip = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, 
-                         stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels)
-            )
-        else:
-            self.skip = nn.Identity()
 
-    def forward(self, x):
-        return self.features(x) + self.skip(x)
-
-class ResBlock3d(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1, kernel_size=3, norm_type="gn", target_channels_per_group=4, activation = 'relu'):
-        super().__init__()
-        fart = kernel_size - 1
-        padding = fart//2
-        
-        self.features = nn.Sequential(
-
-            nn.Conv3d(in_channels, out_channels, kernel_size=kernel_size, 
-                      padding=padding, stride=stride, bias=False),
-            get_norm_layer(norm_type, out_channels, target_channels_per_group),
-            nn.SiLU(inplace=True),
-            #dropout here
-            nn.Conv3d(out_channels, out_channels, kernel_size=kernel_size, 
-                      padding=padding, bias=False),
-            get_norm_layer(norm_type, out_channels, target_channels_per_group),
-            
-        )
-        
-        # Skip connection
-        if in_channels != out_channels or stride != 1:
-            self.skip = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=1, 
-                         stride=stride, bias=False),
-                get_norm_layer(norm_type, out_channels, target_channels_per_group),
-            )
-        else:
-            self.skip = nn.Identity()
-
-    def forward(self, x):
-        return F.silu(self.features(x) + self.skip(x), inplace = True)   
     
 class PreActResBlock3d(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1, kernel_size=3, norm_type="gn", target_channels_per_group=4, dilation = 1):
+    def __init__(self, in_channels, out_channels, stride=1, kernel_size=3, norm_type="gn", target_channels_per_group=4):
         """padding will always be dynamic to keep spatial size the same"""
         super().__init__()
         fart = kernel_size - 1
@@ -146,7 +81,7 @@ class PreActResBlock3d(nn.Module):
             nn.SiLU(inplace=True),
             #dropout here
             nn.Conv3d(out_channels, out_channels, kernel_size=kernel_size, 
-                      padding=padding, bias=False, dilation= dilation),
+                      padding=padding, bias=False),
         )
         
         # Skip connection
@@ -164,7 +99,7 @@ class PreActResBlock3d(nn.Module):
     
 class PreActRefinementBlock3d(nn.Module):
     def __init__(self, in_channels, kernel_size=3, norm_type="gn"):
-        """fullfat3d conv for refinement"""
+        """fullfat3d conv for refinement, only 1 conv"""
         super().__init__()
         fart = kernel_size - 1
         padding = fart//2
@@ -182,39 +117,6 @@ class PreActRefinementBlock3d(nn.Module):
 
     def forward(self, x):
         return self.features(x) + self.skip(x)  
-    
-class UpsamplePreActResBlock3d(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=2, kernel_size=3, norm_type="gn", target_channels_per_group=4):
-        super().__init__()
-        fart = kernel_size - 1
-        padding = fart//2
-
-        self.features = nn.Sequential(
-            get_norm_layer(norm_type, in_channels, target_channels_per_group),
-            nn.SiLU(inplace=True),
-            # Upsample spatially first, keep channels same
-            nn.ConvTranspose3d(in_channels, in_channels, kernel_size=kernel_size, 
-                      padding=padding, stride=stride, output_padding=stride-1, bias=False),
-
-            get_norm_layer(norm_type, in_channels, target_channels_per_group),
-            nn.SiLU(inplace=True),
-            # Then adjust channels
-            nn.Conv3d(in_channels, out_channels, kernel_size=kernel_size, 
-                      padding=padding, bias=False),
-        )
-
-        # Skip connection
-        if in_channels == out_channels and stride == 1:
-            self.skip = nn.Identity()
-        else:
-            self.skip = nn.Sequential(
-                nn.ConvTranspose3d(in_channels, out_channels, kernel_size=1, 
-                         stride=stride, output_padding=stride-1, bias=False),
-                get_norm_layer(norm_type, out_channels, target_channels_per_group),
-            )
-
-    def forward(self, x):
-        return self.features(x) + self.skip(x)
 
 
 class PreActResBottleneckBlock3d(nn.Module):
@@ -291,6 +193,7 @@ class PreActGroupPointBlock3d(nn.Module):
     
 class PreActDownchannel3d(nn.Module):
     def __init__(self, in_channels, out_channels, norm_type = 'gn'):
+        """1x1 kernel preact wrapped block for downchanneling"""
         super().__init__()
         self.features = nn.Sequential(
             get_norm_layer(norm_type, in_channels),
@@ -314,47 +217,6 @@ class PreActDownchannel3d(nn.Module):
         skip = self.skip(x)
         return out+skip 
     
-    
-class PreActDSepHWBlock3d(nn.Module):
-    def __init__(self, in_channels, norm_type = 'gn'):
-        super().__init__()
-        self.features = nn.Sequential(
-            get_norm_layer(norm_type, in_channels),
-            nn.SiLU(inplace=True),
-            nn.Conv3d(in_channels, in_channels, kernel_size=(1,3,3), padding=(1,0,0), groups=in_channels, bias= False),  # depth
-            get_norm_layer(norm_type, in_channels),
-            nn.SiLU(inplace=True),
-            nn.Conv3d(in_channels, in_channels, kernel_size=(3,1,1), padding=(0,1,1), groups=in_channels,bias=False)  # hw   
-        )
-        self.skip = nn.Identity()
-        
-    def forward(self, x):
-        out = self.features(x)
-        skip = self.skip(x)
-        return out+skip
-    
-class PreActAsymmetricBlock3d(nn.Module):
-    def __init__(self, in_channels, norm_type = 'gn'):
-        """133 311 331 kernel, spatial -> temporal -> spatiotemporal mixing"""
-        super().__init__()
-        self.features = nn.Sequential(
-            get_norm_layer(norm_type, in_channels),
-            nn.SiLU(inplace=True),
-            nn.Conv3d(in_channels, in_channels, kernel_size=(1,3,3), padding=(0,1,1), groups=in_channels, bias= False),  # depth
-            get_norm_layer(norm_type, in_channels),
-            nn.SiLU(inplace=True),
-            nn.Conv3d(in_channels, in_channels, kernel_size=(3,1,1), padding=(1,0,0), groups=in_channels,bias=False),  # hw   
-            get_norm_layer(norm_type, in_channels),
-            nn.SiLU(inplace=True),
-            nn.Conv3d(in_channels, in_channels, kernel_size=(3,3,1), padding=(1,1,0), groups=in_channels,bias=False)  # hw   
-        )
-        self.skip = nn.Identity()
-        
-    def forward(self, x):
-        out = self.features(x)
-        skip = self.skip(x)
-        return out+skip
-
 
  
 class SEBlock3d(nn.Module):

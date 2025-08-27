@@ -66,6 +66,80 @@ class FocalLoss(nn.Module):
 
 if __name__ == "__main__":
     
+    CONFIG = {
+        # Model
+        'dropout_p': 0.15,
+        'norm_type': 'gn',
+        
+        # Training
+        'epochs': 10,
+        'lr': 1e-3,
+        'batch_size': 2,
+        'batches_per_step': 1,
+        'steps_per_epoch': 50,
+        
+        # Data
+        'angstrom_blob_sigma': 200,
+        'weight_sigma_scale': 1.5,
+        'downsampling_factor': 16,
+        'train_size': 0.80,
+        'random_state': 42,
+        
+        # Loss
+        'pos_weight': 420,
+        
+        # Optimizer
+        'weight_decay': 1e-4,
+        'backbone_lr_factor': 0.1,
+        'warmup_ratio': 0.1,
+        
+        # DataLoader
+        'num_workers': 4,
+        'val_workers': 2,
+        'pin_memory': True,
+        'persistent_workers': True,
+        'prefetch_factor': 1,
+        
+        # Paths
+        'save_dir': './models/test/',
+        
+        # Other
+        'topk_values': [10, 50, 300],
+        'save_period': 1,
+        
+        # Feature toggles
+        'enable_augmentation': False,
+        'enable_deterministic': True,
+        'load_pretrained': False,
+        'debug_mode': False,
+        'use_subset': True,
+        'subset_fraction': 0.1,
+        'empty_validation': True,
+        
+        # Augmentation settings (only used if enabled)
+        'augmentation': {
+            'gaussian_std': 0.02,
+            'shift_offsets': 0.02,
+            'contrast_gamma': (0.98, 1.02),
+            'scale_factors': 0.02,
+            'rotate90_prob': 0.5,
+            'flip_prob': 0.5,
+            'spatial_pad_size': [168, 304, 304],
+            'spatial_crop_size': [160, 288, 288],
+            'rotation_range': 0.33,
+            'rotation_prob': 0.25,
+            'zoom_range': (0.9, 1.1),
+            'zoom_prob': 0.25,
+        },
+        
+        # Model loading (only used if enabled)
+        'pretrained': {
+            'model_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best.pt',
+            'optimizer_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best_optimizer.pt',
+            'load_optimizer': True,
+        }
+    }
+    
     def get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps):
         import math
         def lr_lambda(current_step):
@@ -77,116 +151,102 @@ if __name__ == "__main__":
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-    train_transform = monai.transforms.Compose([
-        #seems to be a sweetspot at least for single sample, dont use for larger datasets prob
-        # transforms.RandGaussianNoised(keys='patch', dtype=torch.float16, prob=1, std=0.02),
-        # transforms.RandShiftIntensityd(keys='patch', offsets=0.02, safe=True, prob=1),
-        # transforms.RandAdjustContrastd(keys="patch", gamma=(0.98, 1.02), prob=1),
-        # transforms.RandScaleIntensityd(keys="patch", factors=0.02, prob=1),
-
-        
-        #these are probably sufficient
-        # transforms.RandRotate90d(keys=["patch", "label"], prob=0.5, spatial_axes=[1,2]),
-        # transforms.RandFlipd(keys=['patch', 'label'], prob=0.5, spatial_axis=[0,1,2]),
-        # transforms.SpatialPadd(keys=['patch', 'label'], spatial_size=[168,304,304], mode='reflect'),
-        # transforms.RandSpatialCropd(keys=['patch', 'label'], roi_size=[160,288,288], random_center=True),
-        
-        # transforms.RandRotated(keys=['patch', 'label'], range_x=0.33, range_y=0.33, range_z=0.33, prob=0.25, mode=['trilinear', 'nearest']),
-        # transforms.RandZoomd(keys=['patch', 'label'], min_zoom = 0.9, max_zoom = 1.1, prob = 0.25, mode = ['trilinear', 'nearest']),
-    ])
+    # Create augmentation transforms based on config
+    aug_transforms = []
+    if CONFIG['enable_augmentation']:
+        aug = CONFIG['augmentation']
+        aug_transforms.extend([
+            # transforms.RandGaussianNoised(keys='patch', dtype=torch.float16, prob=1, std=aug['gaussian_std']),
+            # transforms.RandShiftIntensityd(keys='patch', offsets=aug['shift_offsets'], safe=True, prob=1),
+            # transforms.RandAdjustContrastd(keys="patch", gamma=aug['contrast_gamma'], prob=1),
+            # transforms.RandScaleIntensityd(keys="patch", factors=aug['scale_factors'], prob=1),
+            transforms.RandRotate90d(keys=["patch", "label"], prob=aug['rotate90_prob'], spatial_axes=[1,2]),
+            transforms.RandFlipd(keys=['patch', 'label'], prob=aug['flip_prob'], spatial_axis=[0,1,2]),
+            transforms.SpatialPadd(keys=['patch', 'label'], spatial_size=aug['spatial_pad_size'], mode='reflect'),
+            transforms.RandSpatialCropd(keys=['patch', 'label'], roi_size=aug['spatial_crop_size'], random_center=True),
+            # transforms.RandRotated(keys=['patch', 'label'], range_x=aug['rotation_range'], range_y=aug['rotation_range'], range_z=aug['rotation_range'], prob=aug['rotation_prob'], mode=['trilinear', 'nearest']),
+            # transforms.RandZoomd(keys=['patch', 'label'], min_zoom=aug['zoom_range'][0], max_zoom=aug['zoom_range'][1], prob=aug['zoom_prob'], mode=['trilinear', 'nearest']),
+        ])
+    
+    train_transform = monai.transforms.Compose(aug_transforms)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # torch.manual_seed(42)
-    # torch.cuda.manual_seed(42)
-    # torch.cuda.manual_seed_all(42)
-    # np.random.seed(42)
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.benchmark = False
-    # torch.use_deterministic_algorithms(True)
+    # Set deterministic behavior if enabled
+    if CONFIG['enable_deterministic']:
+        torch.manual_seed(42)
+        torch.cuda.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
+        np.random.seed(42)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
 
-    model = MotorIdentifier(dropout_p= 0.15, norm_type="gn")
+    model = MotorIdentifier(dropout_p=CONFIG['dropout_p'], norm_type=CONFIG['norm_type'])
     model.print_params()
-    # time.sleep(1000)
-
-
-    # print('loading state dict into model\n'*20)
-    # model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best.pt'))
-
-
-    save_dir = './models/test/'
     
-    os.makedirs(save_dir, exist_ok= True)#just so we dont accidentally overwrite stuff
     
-    master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
+
+    # Load pretrained model if enabled
+    if CONFIG['load_pretrained']:
+        print('Loading state dict into model\n' * 20)
+        model.load_state_dict(torch.load(CONFIG['pretrained']['model_path']))
+
+    save_dir = CONFIG['save_dir']
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    master_tomo_path = Path.cwd() / 'data/processed/patch_pt_data'
     tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
 
-    train_id_list, val_id_list = train_test_split(tomo_id_list, train_size= 0.95, test_size= 0.05, random_state= 42)
-    train_id_list = train_id_list[:len(train_id_list)//10]
-    # train_id_list = ['tomo_d7475d']
+    train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=CONFIG['train_size'], test_size=1-CONFIG['train_size'], random_state=CONFIG['random_state'])
     
-    # val_id_list = val_id_list[:len(val_id_list)//10]
-    val_id_list =    []
-    # val_id_list = ['tomo_d7475d']
+    # Apply dataset filtering based on config
+    if CONFIG['use_subset']:
+        train_id_list = train_id_list[:int(len(train_id_list) * CONFIG['subset_fraction'])]
+        val_id_list = val_id_list[:int(len(val_id_list) * CONFIG['subset_fraction'])]
+    if CONFIG['empty_validation']:
+        val_id_list = []
     
-    epochs = 25
+    epochs = CONFIG['epochs']
+    lr = CONFIG['lr']
+    batch_size = CONFIG['batch_size']
+    batches_per_step = CONFIG['batches_per_step']
+    steps_per_epoch = CONFIG['steps_per_epoch']
     
-    lr = 1e-3
-    batch_size = 1
-    batches_per_step = 2 #for gradient accumulation (every n batches we step)
-    steps_per_epoch = 50
-    
-    angstrom_blob_sigma = 200 #this is in real coord space not downsampled
-    #gaussian edge weighting basically
-    weight_sigma_scale = 1.5 #larger is prolly fine for downscaled heatmaps
-    downsampling_factor = 16
+    angstrom_blob_sigma = CONFIG['angstrom_blob_sigma']
+    weight_sigma_scale = CONFIG['weight_sigma_scale']
+    downsampling_factor = CONFIG['downsampling_factor']
     print(f'TOTAL EXPECTED PATCHES TRAINED: {batch_size*batches_per_step*steps_per_epoch*epochs}')
     
     total_steps = epochs * steps_per_epoch
-    warmup_steps = int(0.1 * total_steps)#% of steps warmup, 5% is about 2 epochs
+    warmup_steps = int(CONFIG['warmup_ratio'] * total_steps)
     print(f'WARMUP STEPS: {warmup_steps}')
 
 
 
     # Collect parameter groups
     backbone_params = list(model.stem.parameters()) + list(model.backbone.parameters())
-    decoder_params = list(model.decoder.parameters())
     head_params = list(model.head.parameters())
 
     # Optimizer with differential learning rates
     optimizer = torch.optim.AdamW([
-        {'params': backbone_params, 'lr': lr/10},      # Lower LR for backbone
-        {'params': decoder_params, 'lr': lr},            # Normal LR for decoder
-        {'params': head_params, 'lr': lr}                # Normal LR for head
-    ], weight_decay=1e-4)
+        {'params': backbone_params, 'lr': lr * CONFIG['backbone_lr_factor']},
+        {'params': head_params, 'lr': lr}
+    ], weight_decay=CONFIG['weight_decay'])
 
-
-
-    #we only load optimizer state when basically everything we are doing is the same
-    #optimizer state has a bunch of running avgs
+    # Load optimizer state if pretrained model is loaded
+    if CONFIG['load_pretrained'] and CONFIG['pretrained']['load_optimizer']:
+        print('Loading state dict into optimizer')
+        optimizer_state = torch.load(CONFIG['pretrained']['optimizer_path'], map_location=device)
+        optimizer.load_state_dict(optimizer_state)
+        # Force move optimizer state to device after loading
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(device)
     
-    # print('Loading state dict into optimizer')
-    # optimizer_state = torch.load(
-    #     r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best_optimizer.pt', 
-    #     map_location=device
-    # )
-    
-    # optimizer.load_state_dict(optimizer_state)
-    # # Force move optimizer state to device after loading
-    # for state in optimizer.state.values():
-    #     for k, v in state.items():
-    #         if torch.is_tensor(v):
-    #             state[k] = v.to(device)
-    
-
-
-    
-    #1000 pos weight might not be that crazy
-    #since 160x288x288 patches, gauss std dev of 12.5 with 1 motor
-    #2.5 std devs of the blob covers about 30k voxels
-    #so with 13.3m pixels total 1k weight isnt super crazy
-    
-    conf_loss_fn = WeightedBCELoss(pos_weight=420)
+    conf_loss_fn = WeightedBCELoss(pos_weight=CONFIG['pos_weight'])
 
     
     
@@ -206,45 +266,47 @@ if __name__ == "__main__":
         tomo_id_list= val_id_list
     )
     
-    pin_memory = True
-    num_workers =5
-    val_workers = 1 
-    persistent_workers = True
-    prefetch_factor = 1
+    sampler = RandomNSampler(train_dataset, n=batch_size*batches_per_step*steps_per_epoch)
     
-    sampler = RandomNSampler(train_dataset, n = batch_size*batches_per_step*steps_per_epoch)
-    # g = torch.Generator()
-    # g.manual_seed(42)
-    
-    train_loader = DataLoader(train_dataset,shuffle = False, sampler = sampler, batch_size = batch_size, pin_memory =pin_memory, num_workers=num_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
+    train_loader = DataLoader(
+        train_dataset, 
+        shuffle=False, 
+        sampler=sampler, 
+        batch_size=batch_size, 
+        pin_memory=CONFIG['pin_memory'], 
+        num_workers=CONFIG['num_workers'], 
+        persistent_workers=CONFIG['persistent_workers'], 
+        prefetch_factor=CONFIG['prefetch_factor']
+    )
 
-    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle = False, pin_memory =pin_memory, num_workers=val_workers, persistent_workers= persistent_workers, prefetch_factor= prefetch_factor)
-
-
-
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        pin_memory=CONFIG['pin_memory'], 
+        num_workers=CONFIG['val_workers'], 
+        persistent_workers=CONFIG['persistent_workers'], 
+        prefetch_factor=CONFIG['prefetch_factor']
+    )
                 
-    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps= warmup_steps, total_steps= total_steps)
-
+    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
 
     # Train and validate the model
     trainer = Trainer(
         model=model,
-        batches_per_step = batches_per_step,
+        batches_per_step=batches_per_step,
         train_loader=train_loader,
         val_loader=val_loader,
         optimizer=optimizer,
-        scheduler = scheduler,
-        # regression_loss_fn=regression_loss_fn,
-        conf_loss_fn = conf_loss_fn,
-        # regression_loss_weight = 1.0,
-        # conf_loss_weight= 2.0,
+        scheduler=scheduler,
+        conf_loss_fn=conf_loss_fn,
         device=device,
-        save_dir = save_dir,
-        topk_values=[10, 50, 300]
-        )
+        save_dir=save_dir,
+        topk_values=CONFIG['topk_values']
+    )
     
     trainer.train(
         epochs=epochs,
-        save_period=1
+        save_period=CONFIG['save_period']
     )
     

@@ -291,7 +291,7 @@ if __name__ == '__main__':
     ])
     # train_transform = None
     
-    master_tomo_path = Path.cwd() / 'patch_pt_data'
+    master_tomo_path = Path.cwd() / 'data/processed/patch_pt_data'
     tomo_dir_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir()]
     
     # Create dataset with patches_per_batch parameter
@@ -299,8 +299,8 @@ if __name__ == '__main__':
         angstrom_blob_sigma=200,
         sigma_scale=1.5,
         downsampling_factor=16,
-        patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
-        tomo_id_list=['tomo_d7475d'],
+        # patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
+        # tomo_id_list=['tomo_d7475d'],
         transform = train_transform,
     )
     
