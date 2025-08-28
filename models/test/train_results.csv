@@ -1,2 +1,0 @@
-epoch,train_conf_loss,train_dice,train_comp,val_conf_loss,val_dice,val_comp,train_top10,train_top50,train_top300,val_top10,val_top50,val_top300
-0,1.827465,0.012004,0.090682,0.0,0.0,0.0,0.05,0.11,0.42,0.0,0.0,0.0

@@ -88,9 +88,9 @@ class Trainer:
     def _train_one_epoch(self, epoch_index):
         """Train for one epoch"""
         conf_loss_tracker = LossTracker(is_mean_loss=True)
-        dice_tracker = LossTracker(is_mean_loss=True)
-        comp_tracker = LossTracker(is_mean_loss=True)
-        topk_tracker = TopKTracker(self.topk_values)
+        # dice_tracker = LossTracker(is_mean_loss=True)  # DISABLED FOR SPEED TEST
+        # comp_tracker = LossTracker(is_mean_loss=True)  # DISABLED FOR SPEED TEST
+        # topk_tracker = TopKTracker(self.topk_values)   # DISABLED FOR SPEED TEST
 
         self.model.train()
         total_batches = len(self.train_loader)
@@ -108,15 +108,15 @@ class Trainer:
             self.scaler.scale(conf_loss).backward()
             
             # Compute metrics for tracking
-            with torch.no_grad():
-                batch_dice = soft_dice_score(outputs, labels)
-                dice_tracker.update(batch_loss=batch_dice, batch_size=patches.shape[0])
+            # with torch.no_grad():
+                # batch_dice = soft_dice_score(outputs, labels)
+                # dice_tracker.update(batch_loss=batch_dice, batch_size=patches.shape[0])
                 
-                batch_comp = comprehensive_heatmap_metric(outputs, labels)
-                comp_tracker.update(batch_loss=batch_comp, batch_size=patches.shape[0])
+                # batch_comp = comprehensive_heatmap_metric(outputs, labels)
+                # comp_tracker.update(batch_loss=batch_comp, batch_size=patches.shape[0])
                 
-                batch_topk = topk_accuracy(outputs, labels, self.topk_values)
-                topk_tracker.update(batch_topk, patches.shape[0])
+                # batch_topk = topk_accuracy(outputs, labels, self.topk_values)
+                # topk_tracker.update(batch_topk, patches.shape[0])
             
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100)
@@ -141,9 +141,10 @@ class Trainer:
                 )
 
         conf_loss = conf_loss_tracker.get_epoch_loss()
-        dice_score = dice_tracker.get_epoch_loss()
-        comp_score = comp_tracker.get_epoch_loss()
-        topk_results = topk_tracker.get_epoch_results()
+        # Return dummy values for disabled metrics
+        dice_score = 0.0  # dice_tracker.get_epoch_loss()
+        comp_score = 0.0  # comp_tracker.get_epoch_loss() 
+        topk_results = {k: 0.0 for k in self.topk_values}  # topk_tracker.get_epoch_results()
         return conf_loss, dice_score, comp_score, topk_results
 
     def _validate_one_epoch(self):

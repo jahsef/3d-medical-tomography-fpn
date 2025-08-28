@@ -101,7 +101,7 @@ if __name__ == "__main__":
         'prefetch_factor': 1,
         
         # Paths
-        'save_dir': './models/test/',
+        'save_dir': './models/remove_metrics_test/',
         
         # Other
         'seed': 42,
