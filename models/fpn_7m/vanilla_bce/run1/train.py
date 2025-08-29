@@ -21,6 +21,7 @@ current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 #added model_defs to path
 from model_defs.motoridentifier import MotorIdentifier
+from model_defs._OLD_FPN import MotorIdentifier as FPNModel
 from sklearn.model_selection import train_test_split
 
 import utils
@@ -68,7 +69,7 @@ if __name__ == "__main__":
     
     CONFIG = {
         # Model
-        'dropout_p': 0.15,
+        'dropout_p': 0.0,
         'norm_type': 'gn',
         
         # Training
@@ -76,22 +77,29 @@ if __name__ == "__main__":
         'lr': 1e-3,
         'batch_size': 1,
         'batches_per_step': 2,
-        'steps_per_epoch': 16,
+        'steps_per_epoch': 512,
         
         # Data
         'angstrom_blob_sigma': 200,
         'weight_sigma_scale': 1.5,
         'downsampling_factor': 16,
-        'train_size': 0.80,
+        'train_size': 0.9,  
         'random_state': 42,
         
         # Loss
-        'pos_weight': 420,
+        'loss_function': 'vanilla_bce',  # 'vanilla_bce', 'weighted_bce', 'focal'
+        'pos_weight': 5,
+        'gamma': 1.0,  # For focal loss
+        
         
         # Optimizer
         'weight_decay': 1e-4,
         'backbone_lr_factor': 0.1,
         'warmup_ratio': 0.1,
+        #how much data u want lol
+        'use_subset': True,
+        'subset_fraction': 1,
+        'empty_validation': True,
         
         # DataLoader
         'num_workers': 1,
@@ -101,7 +109,8 @@ if __name__ == "__main__":
         'prefetch_factor': 1,
         
         # Paths
-        'save_dir': './models/remove_metrics_test/',
+        'save_dir': './models/fpn_7m/vanilla_bce/run1',
+        'exist_ok':False,
         
         # Other
         'seed': 42,
@@ -113,9 +122,8 @@ if __name__ == "__main__":
         'enable_deterministic': False,  # Disabled due to CUDA upsample_trilinear3d_backward_out_cuda non-deterministic implementation
         'load_pretrained': False,
         'debug_mode': False,
-        'use_subset': True,
-        'subset_fraction': 0.1,
-        'empty_validation': False,
+
+        
         
         # Augmentation settings (only used if enabled)
         'augmentation': {
@@ -138,8 +146,13 @@ if __name__ == "__main__":
             'model_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best.pt',
             'optimizer_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best_optimizer.pt',
             'load_optimizer': True,
-        }
+        },
+        
+
     }
+    
+    save_dir = CONFIG['save_dir']
+    os.makedirs(save_dir, exist_ok=CONFIG['exist_ok'])
     
     def get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps):
         import math
@@ -185,7 +198,8 @@ if __name__ == "__main__":
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True)
 
-    model = MotorIdentifier(dropout_p=CONFIG['dropout_p'], norm_type=CONFIG['norm_type'])
+    model = FPNModel(dropout_p=CONFIG['dropout_p'], norm_type=CONFIG['norm_type'])
+    print(f'MODEL TYPE: {type(model)}')
     model.print_params()
     
     
@@ -195,9 +209,7 @@ if __name__ == "__main__":
         print('Loading state dict into model\n' * 20)
         model.load_state_dict(torch.load(CONFIG['pretrained']['model_path']))
 
-    save_dir = CONFIG['save_dir']
-    
-    os.makedirs(save_dir, exist_ok=True)
+
     
     master_tomo_path = Path.cwd() / 'data/processed/patch_pt_data'
     tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
@@ -228,15 +240,20 @@ if __name__ == "__main__":
 
 
 
-    # Collect parameter groups
-    backbone_params = list(model.stem.parameters()) + list(model.backbone.parameters())
-    head_params = list(model.head.parameters())
-
-    # Optimizer with differential learning rates
-    optimizer = torch.optim.AdamW([
-        {'params': backbone_params, 'lr': lr * CONFIG['backbone_lr_factor']},
-        {'params': head_params, 'lr': lr}
-    ], weight_decay=CONFIG['weight_decay'])
+    # Optimizer - handle parameter groups if model has backbone/stem
+    if hasattr(model, 'backbone') and hasattr(model, 'stem'):
+        params = [
+            {'params': list(model.stem.parameters()) + list(model.backbone.parameters()), 
+             'lr': lr * CONFIG['backbone_lr_factor']},
+            {'params': list(model.head.parameters()), 'lr': lr},
+            
+        ]
+        if hasattr(model, 'decoder'):
+            params.append({'params': list(model.decoder.parameters()), 'lr': lr})
+            #TODO: SHOULD FIX THIS CONDITIONAL LOGIC LATER TO BE LESS STUPID LOL
+        optimizer = torch.optim.AdamW(params, weight_decay=CONFIG['weight_decay'])
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=CONFIG['weight_decay'])
 
     # Load optimizer state if pretrained model is loaded
     if CONFIG['load_pretrained'] and CONFIG['pretrained']['load_optimizer']:
@@ -249,9 +266,20 @@ if __name__ == "__main__":
                 if torch.is_tensor(v):
                     state[k] = v.to(device)
     
-    conf_loss_fn = WeightedBCELoss(pos_weight=CONFIG['pos_weight'])
-
+    # Configure loss function based on config
+    if CONFIG['loss_function'] == 'vanilla_bce':
+        conf_loss_fn = nn.BCEWithLogitsLoss()
+        print(f"Using vanilla BCE loss")
+    elif CONFIG['loss_function'] == 'weighted_bce':
+        conf_loss_fn = WeightedBCELoss(pos_weight=CONFIG['pos_weight'])
+        print(f"Using weighted BCE loss with pos_weight={CONFIG['pos_weight']}")
+    elif CONFIG['loss_function'] == 'focal':
+        conf_loss_fn = FocalLoss(pos_weight=CONFIG['pos_weight'], gamma=CONFIG['gamma'])
+        print(f"Using focal loss with pos_weight={CONFIG['pos_weight']}, gamma={CONFIG['gamma']}")
+    else:
+        raise ValueError(f"Unknown loss function: {CONFIG['loss_function']}. Choose from: 'vanilla_bce', 'weighted_bce', 'focal'")
     
+
     
     train_dataset = PatchTomoDataset(
         angstrom_blob_sigma=angstrom_blob_sigma,

@@ -13,32 +13,21 @@ from metrics import (
     TopKTracker, 
     soft_dice_score, 
     comprehensive_heatmap_metric, 
-    topk_accuracy
+    topk_accuracy,
+    MetricsEvaluator,
+    MetricsResult,
+    save_csv
 )
 from grapher import TrainingGrapher
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def log_metrics(epoch, filename="train_results.csv", **kwargs):
-    """Log training metrics to CSV file"""
-    fieldnames = list(kwargs.keys())
-    values = [round(float(v), 6) for v in kwargs.values()]
-
-    file_exists = os.path.isfile(filename)
-
-    with open(filename, 'a', newline='') as f:
-        writer = csv.writer(f)
-
-        if not file_exists:
-            writer.writerow(['epoch'] + fieldnames)
-
-        writer.writerow([epoch] + values)
-        
 class Trainer:
 
     def __init__(self, model, batches_per_step, train_loader, val_loader, optimizer, scheduler,
-                conf_loss_fn, device, run_dir='./models/', topk_values=[1, 5, 10, 50]):
+                conf_loss_fn, device, run_dir='./models/', topk_values=[1, 5, 10, 50],
+                enable_train_metrics=True, enable_val_metrics=True):
 
         self.model = model
         self.optimizer = optimizer
@@ -46,6 +35,21 @@ class Trainer:
         self.batches_per_step = batches_per_step
         self.conf_loss_fn = conf_loss_fn
         self.topk_values = topk_values
+        
+        # Initialize metrics evaluators
+        self.train_metrics = MetricsEvaluator(
+            topk_values=topk_values,
+            enable_dice=enable_train_metrics,
+            enable_comp=enable_train_metrics,
+            enable_topk=enable_train_metrics
+        )
+        
+        self.val_metrics = MetricsEvaluator(
+            topk_values=topk_values,
+            enable_dice=enable_val_metrics,
+            enable_comp=enable_val_metrics,
+            enable_topk=enable_val_metrics
+        )
         
         self.device = device
         self.train_loader = train_loader
@@ -69,8 +73,9 @@ class Trainer:
         # Initialize GradScaler for AMP
         self.scaler = torch.amp.GradScaler("cuda")
         
-        # Per-step loss tracking for graphing
+        # Per-step tracking for graphing
         self.step_losses = []
+        self.step_lrs = []
         self.step_count = 0
         
     def _compute_batch_loss(self, patches, labels):
@@ -87,11 +92,9 @@ class Trainer:
     
     def _train_one_epoch(self, epoch_index):
         """Train for one epoch"""
-        conf_loss_tracker = LossTracker(is_mean_loss=True)
-        # dice_tracker = LossTracker(is_mean_loss=True)  # DISABLED FOR SPEED TEST
-        # comp_tracker = LossTracker(is_mean_loss=True)  # DISABLED FOR SPEED TEST
-        # topk_tracker = TopKTracker(self.topk_values)   # DISABLED FOR SPEED TEST
-
+        # Reset metrics for new epoch
+        self.train_metrics.reset_trackers()
+        
         self.model.train()
         total_batches = len(self.train_loader)
         progress_bar = tqdm(enumerate(self.train_loader), total=total_batches,
@@ -107,16 +110,13 @@ class Trainer:
             conf_loss, outputs = self._compute_batch_loss(patches, labels)
             self.scaler.scale(conf_loss).backward()
             
-            # Compute metrics for tracking
-            # with torch.no_grad():
-                # batch_dice = soft_dice_score(outputs, labels)
-                # dice_tracker.update(batch_loss=batch_dice, batch_size=patches.shape[0])
-                
-                # batch_comp = comprehensive_heatmap_metric(outputs, labels)
-                # comp_tracker.update(batch_loss=batch_comp, batch_size=patches.shape[0])
-                
-                # batch_topk = topk_accuracy(outputs, labels, self.topk_values)
-                # topk_tracker.update(batch_topk, patches.shape[0])
+            # Update metrics with batch results
+            self.train_metrics.update_batch(
+                outputs=outputs,
+                labels=labels, 
+                conf_loss=conf_loss.item(),
+                batch_size=patches.shape[0]
+            )
             
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100)
@@ -125,60 +125,53 @@ class Trainer:
             if (batch_idx + 1) % self.batches_per_step == 0:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                # Log step loss for graphing
+                # Log step data for graphing
                 self.step_losses.append(conf_loss.item())
+                self.step_lrs.append(self.scheduler.get_last_lr()[0])
                 self.step_count += 1
                 self.scheduler.step()
-                    
-            
-
-            conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
 
             # Update progress bar - only show loss
             if (batch_idx + 1) % 1 == 0 or (batch_idx + 1) == total_batches:
+                current_metrics = self.train_metrics.get_epoch_results()
                 progress_bar.set_postfix(
-                    loss=f"{conf_loss_tracker.get_epoch_loss():.6f}"
+                    loss=f"{current_metrics.conf_loss:.6f}"
                 )
 
-        conf_loss = conf_loss_tracker.get_epoch_loss()
-        # Return dummy values for disabled metrics
-        dice_score = 0.0  # dice_tracker.get_epoch_loss()
-        comp_score = 0.0  # comp_tracker.get_epoch_loss() 
-        topk_results = {k: 0.0 for k in self.topk_values}  # topk_tracker.get_epoch_results()
-        return conf_loss, dice_score, comp_score, topk_results
+        # Get final epoch results
+        metrics_result = self.train_metrics.get_epoch_results()
+        return metrics_result.conf_loss, metrics_result.dice_score, metrics_result.comp_score, metrics_result.topk_results
 
     def _validate_one_epoch(self):
         """Validate for one epoch"""
-        conf_loss_tracker = LossTracker(is_mean_loss=True)
-        dice_tracker = LossTracker(is_mean_loss=True)
-        comp_tracker = LossTracker(is_mean_loss=True)
-        topk_tracker = TopKTracker(self.topk_values)
+        # Reset metrics for new epoch
+        self.val_metrics.reset_trackers()
+        
         self.model.eval()
 
         with torch.no_grad():
             for patches, labels, global_coords in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
                 conf_loss, outputs = self._compute_batch_loss(patches, labels)
-                conf_loss_tracker.update(batch_loss=conf_loss.item(), batch_size=patches.shape[0])
                 
-                # Compute metrics
-                batch_dice = soft_dice_score(outputs, labels)
-                dice_tracker.update(batch_loss=batch_dice, batch_size=patches.shape[0])
+                # Update metrics with batch results
+                self.val_metrics.update_batch(
+                    outputs=outputs,
+                    labels=labels,
+                    conf_loss=conf_loss.item(),
+                    batch_size=patches.shape[0]
+                )
                 
-                batch_comp = comprehensive_heatmap_metric(outputs, labels)
-                comp_tracker.update(batch_loss=batch_comp, batch_size=patches.shape[0])
-                
-                batch_topk = topk_accuracy(outputs, labels, self.topk_values)
-                topk_tracker.update(batch_topk, patches.shape[0])
-                
-        conf_loss = conf_loss_tracker.get_epoch_loss()
-        dice_score = dice_tracker.get_epoch_loss()
-        comp_score = comp_tracker.get_epoch_loss()
-        topk_results = topk_tracker.get_epoch_results()
-        return conf_loss, dice_score, comp_score, topk_results
+        # Get final epoch results
+        metrics_result = self.val_metrics.get_epoch_results()
+        return metrics_result.conf_loss, metrics_result.dice_score, metrics_result.comp_score, metrics_result.topk_results
 
     def train(self, epochs=50, save_period=0):
         """Main training loop"""
         csv_filepath = self.logs_dir / "train_results.csv"
+        
+        # Clean start - delete existing CSV for fresh experiment
+        csv_filepath.unlink(missing_ok=True)
+        
         logger = utils.Logger()
         logger.log_training_settings(model=self.model, save_dir=str(self.run_dir))
         
@@ -222,7 +215,7 @@ class Trainer:
                 log_data[f'val_top{k}'] = acc
 
             # Log metrics to CSV
-            log_metrics(epoch, filename=str(csv_filepath), **log_data)
+            save_csv(epoch, filename=str(csv_filepath), **log_data)
 
             # Save best model
             if val_conf_loss < best_val_loss or val_conf_loss == 0:
@@ -241,6 +234,7 @@ class Trainer:
         # Create comprehensive training plots
         self.grapher.plot_training_progress(
             step_losses=self.step_losses,
+            step_lrs=self.step_lrs,
             csv_path=csv_filepath
         )
 

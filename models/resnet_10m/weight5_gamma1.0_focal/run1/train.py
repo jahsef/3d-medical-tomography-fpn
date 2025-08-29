@@ -87,7 +87,7 @@ if __name__ == "__main__":
         'random_state': 42,
         
         # Loss
-        'loss_function': 'vanilla_bce',  # 'vanilla_bce', 'weighted_bce', 'focal'
+        'loss_function': 'focal',  # 'vanilla_bce', 'weighted_bce', 'focal'
         'pos_weight': 5,
         'gamma': 1.0,  # For focal loss
         
@@ -109,8 +109,8 @@ if __name__ == "__main__":
         'prefetch_factor': 1,
         
         # Paths
-        'save_dir': './models/fpn_7m/vanilla_bce/run1',
-        'exist_ok':False,
+        'save_dir': './models/resnet_10m/weight5_gamma1.0_focal/run1',
+        'exist_ok':True,
         
         # Other
         'seed': 42,
@@ -198,7 +198,7 @@ if __name__ == "__main__":
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True)
 
-    model = FPNModel(dropout_p=CONFIG['dropout_p'], norm_type=CONFIG['norm_type'])
+    model = MotorIdentifier(dropout_p=CONFIG['dropout_p'], norm_type=CONFIG['norm_type'])
     print(f'MODEL TYPE: {type(model)}')
     model.print_params()
     

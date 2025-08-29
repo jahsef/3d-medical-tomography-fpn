@@ -64,23 +64,32 @@ class MotorIdentifier(nn.Module):
     def __init__(self,initial_features = 12, dropout_p=0, norm_type="gn"):
         super().__init__()
         self.dropout_p = dropout_p
-        STEM_FEATURES = initial_features
-        self.stem = nn.Conv3d(1,STEM_FEATURES,kernel_size=5,padding=2,bias=False)
+        
+        self.stem = nn.Conv3d(1,8,kernel_size=5,padding=2,bias=False)
         
         self.backbone = nn.Sequential(
-            nnblock.PreActResBlock3d(STEM_FEATURES, STEM_FEATURES*2, stride = 2),#1/2
-            nnblock.PreActResBlock3d(STEM_FEATURES*2, STEM_FEATURES*4, stride = 2),#1/4
-            nnblock.PreActResBlock3d(STEM_FEATURES*4, STEM_FEATURES*8, stride = 2),#1/8
-            nnblock.PreActResBlock3d(STEM_FEATURES*8, STEM_FEATURES*16, stride = 2),#1/16
+            nnblock.PreActResBlock3d(8, 16, stride = 2),#1/2
+            nnblock.PreActResBlock3d(16, 32, stride = 2),#1/4
+            nnblock.PreActResBlock3d(32, 64, stride = 2),#1/8
+            nnblock.PreActResBlock3d(64, 64),
+            nnblock.PreActResBlock3d(64, 128, stride = 2),#1/16
+            nnblock.PreActResBlock3d(128, 128),
+            nnblock.PreActResBlock3d(128, 256, stride = 2),#1/32
+            nnblock.PreActResBlock3d(256, 256),
         )
+
         self.head = nn.Sequential(
-            nnblock.PreActResBlock3d(STEM_FEATURES*16,STEM_FEATURES*4, kernel_size=3),
+            nn.Upsample(scale_factor=2, mode = 'trilinear', align_corners=False),
+            nn.Dropout3d(p=self.dropout_p),
+            nnblock.PreActResBlock3d(256,128, kernel_size=3),
+            nnblock.PreActResBlock3d(128,32, kernel_size=3),
             # nnblock.PreActResBlock3d(STEM_FEATURES*4,1, kernel_size=1, target_channels_per_group=4)
-            nnblock.get_norm_layer(num_channels =STEM_FEATURES*4, norm_type = 'gn'),
+            nnblock.get_norm_layer(num_channels =32, norm_type = 'gn'),
             nn.SiLU(inplace=True),
-            nn.Conv3d(STEM_FEATURES*4,1, kernel_size=1, bias = False)
+            nn.Conv3d(32,1, kernel_size=1, bias = False)
         )
-        
+    
+    
     def forward(self, x):
         input_x = x
         assert not torch.isnan(x).any(), 'x nan yo'

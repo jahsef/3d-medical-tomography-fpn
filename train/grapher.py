@@ -13,7 +13,7 @@ class TrainingGrapher:
         self.logs_dir = self.run_dir / 'logs'
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         
-    def plot_training_progress(self, step_losses=None, csv_path=None):
+    def plot_training_progress(self, step_losses=None, step_lrs=None, csv_path=None):
         """
         Create comprehensive training plots with step losses and epoch metrics
         
@@ -32,23 +32,34 @@ class TrainingGrapher:
             except Exception as e:
                 logging.warning(f"Could not load epoch data from {csv_path}: {e}")
         
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        # Create figure with subplots (2x3 grid)
+        fig, axes = plt.subplots(2, 3, figsize=(20, 12))
         fig.suptitle('Training Progress', fontsize=16, fontweight='bold')
         
-        # Plot 1: Step-wise loss with epoch boundaries
+        # Row 1: Step losses | Epoch losses | Learning Rate  
         if step_losses:
             self._plot_step_losses(axes[0, 0], step_losses, epoch_data)
-        
-        # Plot 2: Epoch-level loss comparison
+            
         if epoch_data is not None:
             self._plot_epoch_losses(axes[0, 1], epoch_data)
             
-            # Plot 3: Metrics comparison (Dice, Comp score)
+        # Plot learning rate
+        if step_lrs:
+            self._plot_learning_rate(axes[0, 2], step_lrs, epoch_data)
+        else:
+            axes[0, 2].text(0.5, 0.5, 'No LR data available', ha='center', va='center', transform=axes[0, 2].transAxes)
+            axes[0, 2].set_title('Learning Rate per Step')
+        
+        # Row 2: Metrics | Top-K accuracies | Empty
+        if epoch_data is not None:
             self._plot_metrics(axes[1, 0], epoch_data)
-            
-            # Plot 4: Top-K accuracies
             self._plot_topk_accuracies(axes[1, 1], epoch_data)
+            
+        # Empty plot for future use
+        axes[1, 2].text(0.5, 0.5, 'Reserved for\nfuture metrics', ha='center', va='center', 
+                        transform=axes[1, 2].transAxes, fontsize=12, alpha=0.5)
+        axes[1, 2].set_title('Future Expansion')
+        axes[1, 2].axis('off')
         
         plt.tight_layout()
         
@@ -60,8 +71,19 @@ class TrainingGrapher:
         logging.info(f"Training progress plot saved to {plot_path}")
     
     def _plot_step_losses(self, ax, step_losses, epoch_data):
-        """Plot step-wise losses with epoch boundary markers"""
-        ax.plot(step_losses, alpha=0.7, linewidth=0.8, color='blue', label='Step Loss')
+        """Plot step-wise losses with EMA smoothing"""
+        # Plot noisy step losses with low opacity
+        ax.plot(step_losses, alpha=0.6, linewidth=0.5, color='lightblue', label='Raw Step Loss')
+        
+        # Calculate EMA (Exponential Moving Average)
+        alpha = 0.1  # EMA smoothing factor (lower = smoother)
+        ema = [step_losses[0]]  # Initialize with first value
+        for loss in step_losses[1:]:
+            ema.append(alpha * loss + (1 - alpha) * ema[-1])
+        
+        # Plot EMA with full opacity
+        ax.plot(ema, alpha=1.0, linewidth=2.0, color='blue', label='EMA Step Loss')
+        
         ax.set_title('Training Loss per Step')
         ax.set_xlabel('Step')
         ax.set_ylabel('Loss')
@@ -84,6 +106,44 @@ class TrainingGrapher:
                 # Set epoch ticks
                 epoch_steps = [e * steps_per_epoch for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_losses)]
                 epoch_labels = [str(int(e)) for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_losses)]
+                
+                if epoch_steps:
+                    ax2.set_yticks(epoch_steps)
+                    ax2.set_yticklabels(epoch_labels)
+                    ax2.set_ylim(ax.get_ylim())
+        
+        ax.legend()
+    
+    def _plot_learning_rate(self, ax, step_lrs, epoch_data):
+        """Plot learning rate per step with epoch boundary markers"""
+        if not step_lrs:
+            ax.text(0.5, 0.5, 'No LR data available', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('Learning Rate per Step')
+            return
+            
+        ax.plot(step_lrs, alpha=1.0, linewidth=1.5, color='green', label='Learning Rate')
+        ax.set_title('Learning Rate per Step')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Learning Rate')
+        ax.grid(True, alpha=0.3)
+        
+        # Add epoch boundary lines if we have epoch data
+        if epoch_data is not None and 'epoch' in epoch_data.columns:
+            steps_per_epoch = len(step_lrs) // len(epoch_data) if len(epoch_data) > 0 else 0
+            if steps_per_epoch > 0:
+                for epoch in epoch_data['epoch']:
+                    step_num = epoch * steps_per_epoch
+                    if step_num < len(step_lrs):
+                        ax.axvline(x=step_num, color='red', linestyle='--', alpha=0.6)
+                
+                # Add epoch labels on the right y-axis
+                ax2 = ax.twinx()
+                ax2.set_ylabel('Epoch', color='red')
+                ax2.tick_params(axis='y', labelcolor='red')
+                
+                # Set epoch ticks
+                epoch_steps = [e * steps_per_epoch for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_lrs)]
+                epoch_labels = [str(int(e)) for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_lrs)]
                 
                 if epoch_steps:
                     ax2.set_yticks(epoch_steps)

@@ -1,5 +1,9 @@
 import torch
 import torch.nn.functional as F
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+import csv
+import os
 
 
 class LossTracker:
@@ -146,3 +150,101 @@ def topk_accuracy(pred, target, k_values=[1, 5, 10, 50]):
     
     # Return average accuracies for each k
     return {k: sum(accs) / len(accs) for k, accs in k_accuracies.items()}
+
+
+@dataclass
+class MetricsResult:
+    """Structured container for all training/validation metrics"""
+    conf_loss: float = 0.0
+    dice_score: float = 0.0
+    comp_score: float = 0.0
+    topk_results: Dict[int, float] = None
+    
+    def __post_init__(self):
+        if self.topk_results is None:
+            self.topk_results = {}
+
+
+class MetricsEvaluator:
+    """Unified metrics evaluation with performance control"""
+    
+    def __init__(self, 
+                 topk_values: List[int] = [1, 5, 10, 50],
+                 enable_dice: bool = True,
+                 enable_comp: bool = True, 
+                 enable_topk: bool = True):
+        """
+        Args:
+            topk_values: List of k values for top-k accuracy
+            enable_dice: Whether to compute dice score
+            enable_comp: Whether to compute comprehensive metric
+            enable_topk: Whether to compute top-k accuracies
+        """
+        self.topk_values = topk_values
+        self.enable_dice = enable_dice
+        self.enable_comp = enable_comp
+        self.enable_topk = enable_topk
+        
+        # Initialize trackers
+        self.reset_trackers()
+    
+    def reset_trackers(self):
+        """Reset all internal trackers for new epoch"""
+        self.conf_loss_tracker = LossTracker(is_mean_loss=True)
+        
+        if self.enable_dice:
+            self.dice_tracker = LossTracker(is_mean_loss=True)
+        
+        if self.enable_comp:
+            self.comp_tracker = LossTracker(is_mean_loss=True)
+        
+        if self.enable_topk:
+            self.topk_tracker = TopKTracker(self.topk_values)
+    
+    def update_batch(self, outputs: torch.Tensor, labels: torch.Tensor, 
+                    conf_loss: float, batch_size: int) -> None:
+        """Update metrics with single batch results"""
+        # Always track confidence loss
+        self.conf_loss_tracker.update(batch_loss=conf_loss, batch_size=batch_size)
+        
+        # Compute additional metrics with no_grad for performance
+        with torch.no_grad():
+            if self.enable_dice:
+                batch_dice = soft_dice_score(outputs, labels)
+                self.dice_tracker.update(batch_loss=batch_dice, batch_size=batch_size)
+            
+            if self.enable_comp:
+                batch_comp = comprehensive_heatmap_metric(outputs, labels)
+                self.comp_tracker.update(batch_loss=batch_comp, batch_size=batch_size)
+            
+            if self.enable_topk:
+                batch_topk = topk_accuracy(outputs, labels, self.topk_values)
+                self.topk_tracker.update(batch_topk, batch_size)
+    
+    def get_epoch_results(self) -> MetricsResult:
+        """Get accumulated results for the epoch"""
+        return MetricsResult(
+            conf_loss=self.conf_loss_tracker.get_epoch_loss(),
+            dice_score=self.dice_tracker.get_epoch_loss() if self.enable_dice else 0.0,
+            comp_score=self.comp_tracker.get_epoch_loss() if self.enable_comp else 0.0,
+            topk_results=self.topk_tracker.get_epoch_results() if self.enable_topk else {k: 0.0 for k in self.topk_values}
+        )
+
+
+def save_csv(epoch, filename="train_results.csv", **kwargs):
+    """Save training metrics to CSV file, appending to existing file"""
+    fieldnames = list(kwargs.keys())
+    values = [round(float(v), 6) for v in kwargs.values()]
+    
+    file_exists = os.path.isfile(filename)
+    
+    # Append to file (or create if doesn't exist)
+    with open(filename, 'a', newline='') as f:
+        writer = csv.writer(f)
+        
+        # Write header only if file is new
+        if not file_exists:
+            writer.writerow(['epoch'] + fieldnames)
+        
+        # Write data row
+        writer.writerow([epoch] + values)
