@@ -1,6 +1,7 @@
 # Bacterial Flagellar Motor Detection in Cryo-ET
 
 Competition project for detecting bacterial flagellar motors in cryo-electron tomography data.
+
 **Hardware**: RTX 3080 10GB, 32GB RAM, 2TB NVMe SSD
 
 ## Technical Implementation
