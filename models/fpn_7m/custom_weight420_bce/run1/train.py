@@ -77,20 +77,17 @@ if __name__ == "__main__":
         'lr': 1e-3,
         'batch_size': 1,
         'batches_per_step': 2,
-        'steps_per_epoch': 512,
+        'steps_per_epoch': 256,
         
         # Data
         'angstrom_blob_sigma': 200,
         'weight_sigma_scale': 1.5,
         'downsampling_factor': 16,
-        'train_size': 0.9,  
+        'train_size': 0.9,
         'random_state': 42,
         
         # Loss
-        'loss_function': 'vanilla_bce',  # 'vanilla_bce', 'weighted_bce', 'focal'
-        'pos_weight': 5,
-        'gamma': 1.0,  # For focal loss
-        
+        'pos_weight': 420,
         
         # Optimizer
         'weight_decay': 1e-4,
@@ -109,7 +106,7 @@ if __name__ == "__main__":
         'prefetch_factor': 1,
         
         # Paths
-        'save_dir': './models/fpn_7m/vanilla_bce/run1',
+        'save_dir': './models/fpn_7m/custom_weight420_bce/run1',
         'exist_ok':False,
         
         # Other
@@ -146,9 +143,7 @@ if __name__ == "__main__":
             'model_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best.pt',
             'optimizer_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best_optimizer.pt',
             'load_optimizer': True,
-        },
-        
-
+        }
     }
     
     save_dir = CONFIG['save_dir']
@@ -266,20 +261,9 @@ if __name__ == "__main__":
                 if torch.is_tensor(v):
                     state[k] = v.to(device)
     
-    # Configure loss function based on config
-    if CONFIG['loss_function'] == 'vanilla_bce':
-        conf_loss_fn = nn.BCEWithLogitsLoss()
-        print(f"Using vanilla BCE loss")
-    elif CONFIG['loss_function'] == 'weighted_bce':
-        conf_loss_fn = WeightedBCELoss(pos_weight=CONFIG['pos_weight'])
-        print(f"Using weighted BCE loss with pos_weight={CONFIG['pos_weight']}")
-    elif CONFIG['loss_function'] == 'focal':
-        conf_loss_fn = FocalLoss(pos_weight=CONFIG['pos_weight'], gamma=CONFIG['gamma'])
-        print(f"Using focal loss with pos_weight={CONFIG['pos_weight']}, gamma={CONFIG['gamma']}")
-    else:
-        raise ValueError(f"Unknown loss function: {CONFIG['loss_function']}. Choose from: 'vanilla_bce', 'weighted_bce', 'focal'")
-    
+    conf_loss_fn = WeightedBCELoss(pos_weight=CONFIG['pos_weight'])
 
+    
     
     train_dataset = PatchTomoDataset(
         angstrom_blob_sigma=angstrom_blob_sigma,

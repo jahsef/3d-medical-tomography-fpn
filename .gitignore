@@ -6,3 +6,4 @@
 normalized_zarr_data
 *.pkl
 *.npy
+/data
