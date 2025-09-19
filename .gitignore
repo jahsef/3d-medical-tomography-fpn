@@ -1,9 +1,8 @@
-/original_data/
-/normalized_pt_data/
+
 *.pyc
 *.zip
 *.pt
-normalized_zarr_data
+
 *.pkl
 *.npy
-/data
+*.jpg
