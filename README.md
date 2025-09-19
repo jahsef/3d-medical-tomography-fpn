@@ -16,9 +16,7 @@ Competition project for detecting bacterial flagellar motors in cryo-electron to
 - Custom continuous weighted BCE loss for class imbalance
 
 ### Data Processing
-- Efficient pipeline: 70GB JPG → 300GB preprocessed tensors
-- Memory-optimized dataset class with lazy loading
-- PyTorch tensor caching for fast iteration
+- Medium data scale: 70GB JPG → 300GB raw tensors
 
 ### Results
 Training logs: `models/resnet_10m/custom_weight10_bce/run2/logs/training_progress.png`
