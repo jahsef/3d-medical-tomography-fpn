@@ -11,16 +11,16 @@ import sys
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 #added model_defs to path
-from model_defs.motoridentifier import MotorIdentifier
+from model_defs._OLD_FPN import MotorIdentifier
 
 # Configuration
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\resnet_10m\custom_weight10_bce\run2\weights\best.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn/focal/test/weights\epoch25.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
 
-batch_size = 4
+batch_size = 6
 patch_size = (160,288,288)
 overlap = 0.5#when overfitted looks like overlap matters a lot more lol
 sigma_scale = 1/8
@@ -29,7 +29,7 @@ downsampling_factor = 16
 norm_type = "gn"
 # Load dataset split
 tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
-train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.90, test_size=0.1, random_state=42)
+train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
 #curriculum4
 #1/30:2
 #1/15:3
@@ -38,7 +38,7 @@ train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.90, tes
 
 #after successful curriculum we can move to skip connection ae better enc:dec ratio 4:1 and gaussian weighting for labels (we can keep edge motors)
 
-train_id_list = train_id_list[:len(train_id_list)//30 :]
+train_id_list = train_id_list[: :5]
 # train_id_list = val_id_list
 # train_id_list = ['tomo_d7475d']
 # train_id_list = ['tomo_00e047']

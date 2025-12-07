@@ -63,8 +63,6 @@ class FocalLoss(nn.Module):
         focal_loss = torch.abs(targets-pred_prob)**self.gamma * bce_loss
         return focal_loss.mean()
 
-
-
 if __name__ == "__main__":
     
     CONFIG = {
@@ -88,7 +86,7 @@ if __name__ == "__main__":
         'random_state': 42,
         
         # Loss
-        'loss_function': 'focal',  # 'vanilla_bce', 'weighted_bce', 'focal'
+        'loss_function': 'vanilla_bce',  # 'vanilla_bce', 'weighted_bce', 'focal'
         'pos_weight': 3,
         'gamma': 1.2,  # For focal loss
         
@@ -110,7 +108,7 @@ if __name__ == "__main__":
         'prefetch_factor': 1,
         
         # Paths
-        'save_dir': './models/fpn/new_focal/focal_ablation',
+        'save_dir': './models/fpn/vanilla_bce/focal_ablation',
         'exist_ok':False,
         
         # Other

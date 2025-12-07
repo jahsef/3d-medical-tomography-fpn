@@ -60,69 +60,60 @@ def soft_dice_score(pred, target, smooth=1e-6):
     return sum(dice_scores) / len(dice_scores)  # Return average dice score
 
 
-def comprehensive_heatmap_metric(pred, target, distance_threshold=60):
+def peak_distance(pred_logits, target):
     """
-    Fast and simple heatmap evaluation metric.
-    
+    Compute normalized Euclidean distance between predicted and target peaks.
+
     Args:
-        pred: Predicted heatmap [B, C, H, W, D] or [B, H, W, D]
+        pred_logits: Predicted heatmap logits [B, D, H, W]
         target: Target heatmap (same shape as pred)
-        distance_threshold: Distance threshold in voxels
-    
+
     Returns:
-        score: Combined metric score [0, 1] where higher is better
+        score: [0, 1] where 1 = perfect overlap, 0 = max distance
     """
-    pred = torch.sigmoid(pred)
+    pred = torch.sigmoid(pred_logits)
     batch_size = pred.shape[0]
-    
-    # Move to CPU first
+
     pred = pred.cpu()
     target = target.cpu()
-    
-    # Flatten spatial dimensions for vectorized operations
+
     pred_flat = pred.view(batch_size, -1)
     target_flat = target.view(batch_size, -1)
-    
-    # 1. Correlation (vectorized across batch)
-    pred_mean = pred_flat.mean(dim=1, keepdim=True)
-    target_mean = target_flat.mean(dim=1, keepdim=True)
-    
-    pred_centered = pred_flat - pred_mean
-    target_centered = target_flat - target_mean
-    
-    numerator = (pred_centered * target_centered).sum(dim=1)
-    pred_std = pred_centered.norm(dim=1)
-    target_std = target_centered.norm(dim=1)
-    
-    # Avoid division by zero and NaN
-    correlation = numerator / (pred_std * target_std + 1e-8)
-    correlation = torch.clamp(correlation, -1.0, 1.0)
-    correlation = torch.where(torch.isnan(correlation), torch.zeros_like(correlation), correlation)
-    
-    # 2. Peak distance (simplified - just flat index distance)
-    pred_peaks = pred_flat.argmax(dim=1)
-    target_peaks = target_flat.argmax(dim=1)
-    
-    # Normalize distance by total voxels for rough spatial score
-    total_voxels = pred_flat.shape[1]
-    peak_distance = torch.abs(pred_peaks - target_peaks).float()
-    spatial_score = torch.clamp(1.0 - peak_distance / distance_threshold, 0.0, 1.0)
-    
-    # 3. Peak sharpness (confidence measure)
+
+    spatial_shape = pred.shape[1:]  # (D, H, W)
+    pred_peaks_flat = pred_flat.argmax(dim=1)
+    target_peaks_flat = target_flat.argmax(dim=1)
+
+    # Unravel flat indices to 3D coordinates
+    pred_coords = torch.stack(torch.unravel_index(pred_peaks_flat, spatial_shape))  # (3, batch)
+    target_coords = torch.stack(torch.unravel_index(target_peaks_flat, spatial_shape))  # (3, batch)
+
+    # Euclidean distance between predicted and target peaks
+    distance = torch.sqrt(((pred_coords - target_coords).float() ** 2).sum(dim=0))
+    max_distance = torch.sqrt(torch.tensor(spatial_shape, dtype=torch.float32).pow(2).sum())
+
+    score = 1.0 - (distance / max_distance)
+    return torch.clamp(score, 0.0, 1.0).mean().item()
+
+
+def peak_sharpness(pred_logits):
+    """
+    Compute peak sharpness/confidence measure.
+
+    Args:
+        pred_logits: Predicted heatmap logits [B, D, H, W]
+
+    Returns:
+        score: [0, 1] where higher = sharper peak
+    """
+    pred = torch.sigmoid(pred_logits)
+    pred_flat = pred.view(pred.shape[0], -1).cpu()
+
     pred_max = pred_flat.max(dim=1)[0]
-    pred_mean_val = pred_flat.mean(dim=1)
+    pred_mean = pred_flat.mean(dim=1)
     
-    # Avoid division by zero and NaN
-    sharpness = pred_max / (pred_mean_val + 1e-8)
-    confidence = torch.clamp(sharpness / 10.0, 0.0, 1.0)
-    confidence = torch.where(torch.isnan(confidence), torch.zeros_like(confidence), confidence)
-    
-    # 4. Combine metrics (vectorized)
-    score = 0.5 * correlation + 0.3 * spatial_score + 0.2 * confidence
-    score = torch.clamp(score, 0.0, 1.0)
-    score = torch.where(torch.isnan(score), torch.zeros_like(score), score)
-    
-    return score.mean().item()
+    sharpness = torch.sigmoid(pred_max / (69*pred_mean + 1e-8))#consider dividing by 100, sigmoid is close to 1 at about 4, so to get to 1 sharpness, peak needs to be about 400x larger than avg
+    return torch.clamp(sharpness, 0.0, 1.0).mean().item()
 
 
 def topk_accuracy(pred, target, k_values=[1, 5, 10, 50]):
@@ -157,9 +148,10 @@ class MetricsResult:
     """Structured container for all training/validation metrics"""
     conf_loss: float = 0.0
     dice_score: float = 0.0
-    comp_score: float = 0.0
+    peak_dist: float = 0.0
+    peak_sharp: float = 0.0
     topk_results: Dict[int, float] = None
-    
+
     def __post_init__(self):
         if self.topk_results is None:
             self.topk_results = {}
@@ -167,66 +159,70 @@ class MetricsResult:
 
 class MetricsEvaluator:
     """Unified metrics evaluation with performance control"""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  topk_values: List[int] = [1, 5, 10, 50],
                  enable_dice: bool = True,
-                 enable_comp: bool = True, 
+                 enable_peak_metrics: bool = True,
                  enable_topk: bool = True):
         """
         Args:
             topk_values: List of k values for top-k accuracy
             enable_dice: Whether to compute dice score
-            enable_comp: Whether to compute comprehensive metric
+            enable_peak_metrics: Whether to compute peak distance and sharpness
             enable_topk: Whether to compute top-k accuracies
         """
         self.topk_values = topk_values
         self.enable_dice = enable_dice
-        self.enable_comp = enable_comp
+        self.enable_peak_metrics = enable_peak_metrics
         self.enable_topk = enable_topk
-        
+
         # Initialize trackers
         self.reset_trackers()
-    
+
     def reset_trackers(self):
         """Reset all internal trackers for new epoch"""
         self.conf_loss_tracker = LossTracker(is_mean_loss=True)
-        
+
         if self.enable_dice:
             self.dice_tracker = LossTracker(is_mean_loss=True)
-        
-        if self.enable_comp:
-            self.comp_tracker = LossTracker(is_mean_loss=True)
-        
+
+        if self.enable_peak_metrics:
+            self.peak_dist_tracker = LossTracker(is_mean_loss=True)
+            self.peak_sharp_tracker = LossTracker(is_mean_loss=True)
+
         if self.enable_topk:
             self.topk_tracker = TopKTracker(self.topk_values)
-    
-    def update_batch(self, outputs: torch.Tensor, labels: torch.Tensor, 
+
+    def update_batch(self, outputs: torch.Tensor, labels: torch.Tensor,
                     conf_loss: float, batch_size: int) -> None:
         """Update metrics with single batch results"""
         # Always track confidence loss
         self.conf_loss_tracker.update(batch_loss=conf_loss, batch_size=batch_size)
-        
+
         # Compute additional metrics with no_grad for performance
         with torch.no_grad():
             if self.enable_dice:
                 batch_dice = soft_dice_score(outputs, labels)
                 self.dice_tracker.update(batch_loss=batch_dice, batch_size=batch_size)
-            
-            if self.enable_comp:
-                batch_comp = comprehensive_heatmap_metric(outputs, labels)
-                self.comp_tracker.update(batch_loss=batch_comp, batch_size=batch_size)
-            
+
+            if self.enable_peak_metrics:
+                batch_peak_dist = peak_distance(outputs, labels)
+                batch_peak_sharp = peak_sharpness(outputs)
+                self.peak_dist_tracker.update(batch_loss=batch_peak_dist, batch_size=batch_size)
+                self.peak_sharp_tracker.update(batch_loss=batch_peak_sharp, batch_size=batch_size)
+
             if self.enable_topk:
                 batch_topk = topk_accuracy(outputs, labels, self.topk_values)
                 self.topk_tracker.update(batch_topk, batch_size)
-    
+
     def get_epoch_results(self) -> MetricsResult:
         """Get accumulated results for the epoch"""
         return MetricsResult(
             conf_loss=self.conf_loss_tracker.get_epoch_loss(),
             dice_score=self.dice_tracker.get_epoch_loss() if self.enable_dice else 0.0,
-            comp_score=self.comp_tracker.get_epoch_loss() if self.enable_comp else 0.0,
+            peak_dist=self.peak_dist_tracker.get_epoch_loss() if self.enable_peak_metrics else 0.0,
+            peak_sharp=self.peak_sharp_tracker.get_epoch_loss() if self.enable_peak_metrics else 0.0,
             topk_results=self.topk_tracker.get_epoch_results() if self.enable_topk else {k: 0.0 for k in self.topk_values}
         )
 

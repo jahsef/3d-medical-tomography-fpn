@@ -9,10 +9,11 @@ import utils
 import gc
 
 from metrics import (
-    LossTracker, 
-    TopKTracker, 
-    soft_dice_score, 
-    comprehensive_heatmap_metric, 
+    LossTracker,
+    TopKTracker,
+    soft_dice_score,
+    peak_distance,
+    peak_sharpness,
     topk_accuracy,
     MetricsEvaluator,
     MetricsResult,
@@ -40,14 +41,14 @@ class Trainer:
         self.train_metrics = MetricsEvaluator(
             topk_values=topk_values,
             enable_dice=enable_train_metrics,
-            enable_comp=enable_train_metrics,
+            enable_peak_metrics=enable_train_metrics,
             enable_topk=enable_train_metrics
         )
-        
+
         self.val_metrics = MetricsEvaluator(
             topk_values=topk_values,
             enable_dice=enable_val_metrics,
-            enable_comp=enable_val_metrics,
+            enable_peak_metrics=enable_val_metrics,
             enable_topk=enable_val_metrics
         )
         
@@ -119,10 +120,10 @@ class Trainer:
             )
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=100)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=6.7)
             
-            # Step optimizer after accumulating gradients
-            if (batch_idx + 1) % self.batches_per_step == 0:
+            # Step optimizer after accumulating gradients (or at end of epoch)
+            if (batch_idx + 1) % self.batches_per_step == 0 or (batch_idx + 1) == total_batches:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 # Log step data for graphing
@@ -130,7 +131,7 @@ class Trainer:
                 self.step_lrs.append(self.scheduler.get_last_lr()[0])
                 self.step_count += 1
                 self.scheduler.step()
-
+                
             # Update progress bar - only show loss
             if (batch_idx + 1) % 1 == 0 or (batch_idx + 1) == total_batches:
                 current_metrics = self.train_metrics.get_epoch_results()
@@ -140,7 +141,7 @@ class Trainer:
 
         # Get final epoch results
         metrics_result = self.train_metrics.get_epoch_results()
-        return metrics_result.conf_loss, metrics_result.dice_score, metrics_result.comp_score, metrics_result.topk_results
+        return metrics_result.conf_loss, metrics_result.dice_score, metrics_result.peak_dist, metrics_result.peak_sharp, metrics_result.topk_results
 
     def _validate_one_epoch(self):
         """Validate for one epoch"""
@@ -163,7 +164,7 @@ class Trainer:
                 
         # Get final epoch results
         metrics_result = self.val_metrics.get_epoch_results()
-        return metrics_result.conf_loss, metrics_result.dice_score, metrics_result.comp_score, metrics_result.topk_results
+        return metrics_result.conf_loss, metrics_result.dice_score, metrics_result.peak_dist, metrics_result.peak_sharp, metrics_result.topk_results
 
     def train(self, epochs=50, save_period=0):
         """Main training loop"""
@@ -180,32 +181,34 @@ class Trainer:
         optimizer_path = self.weights_dir / 'best_optimizer.pt'
         
         for epoch in range(epochs):
-            train_conf_loss, train_dice, train_comp, train_topk = self._train_one_epoch(epoch)
-            val_conf_loss, val_dice, val_comp, val_topk = self._validate_one_epoch()
-            
+            train_conf_loss, train_dice, train_peak_dist, train_peak_sharp, train_topk = self._train_one_epoch(epoch)
+            val_conf_loss, val_dice, val_peak_dist, val_peak_sharp, val_topk = self._validate_one_epoch()
+
             print(f"Epoch {epoch}:")
-            print(f"  Train Conf Loss: {train_conf_loss:.6f} | Train Dice: {train_dice:.4f} | Train Comp: {train_comp:.4f}")
-            
+            print(f"  Train Loss: {train_conf_loss:.6f} | Dice: {train_dice:.4f} | PeakDist: {train_peak_dist:.4f} | PeakSharp: {train_peak_sharp:.4f}")
+
             # Print train top-k results
-            train_topk_str = " | ".join([f"Train Top-{k}: {acc:.3f}" for k, acc in train_topk.items()])
+            train_topk_str = " | ".join([f"Top-{k}: {acc:.3f}" for k, acc in train_topk.items()])
             print(f"  {train_topk_str}")
-            
-            print(f"  Val Conf Loss: {val_conf_loss:.6f} | Val Dice: {val_dice:.4f} | Val Comp: {val_comp:.4f}")
-            
+
+            print(f"  Val Loss: {val_conf_loss:.6f} | Dice: {val_dice:.4f} | PeakDist: {val_peak_dist:.4f} | PeakSharp: {val_peak_sharp:.4f}")
+
             # Print validation top-k results
-            val_topk_str = " | ".join([f"Val Top-{k}: {acc:.3f}" for k, acc in val_topk.items()])
+            val_topk_str = " | ".join([f"Top-{k}: {acc:.3f}" for k, acc in val_topk.items()])
             print(f"  {val_topk_str}")
-            
+
             print("-" * 60)
 
             # Prepare metrics for CSV logging
             log_data = {
                 'train_conf_loss': train_conf_loss,
                 'train_dice': train_dice,
-                'train_comp': train_comp,
+                'train_peak_dist': train_peak_dist,
+                'train_peak_sharp': train_peak_sharp,
                 'val_conf_loss': val_conf_loss,
                 'val_dice': val_dice,
-                'val_comp': val_comp,
+                'val_peak_dist': val_peak_dist,
+                'val_peak_sharp': val_peak_sharp,
             }
             
             # Add top-k metrics to log data
@@ -231,12 +234,12 @@ class Trainer:
                 torch.save(self.model.state_dict(), periodic_save_path)
                 torch.save(self.optimizer.state_dict(), periodic_optimizer_save_path)
         
-        # Create comprehensive training plots
-        self.grapher.plot_training_progress(
-            step_losses=self.step_losses,
-            step_lrs=self.step_lrs,
-            csv_path=csv_filepath
-        )
+            #create graphs after every epoch lol
+            self.grapher.plot_training_progress(
+                step_losses=self.step_losses,
+                step_lrs=self.step_lrs,
+                csv_path=csv_filepath
+            )
 
 if __name__ == '__main__':
     # Test code would go here

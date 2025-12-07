@@ -83,35 +83,12 @@ class TrainingGrapher:
         
         # Plot EMA with full opacity
         ax.plot(ema, alpha=1.0, linewidth=2.0, color='blue', label='EMA Step Loss')
-        
-        ax.set_title('Training Loss per Step')
+        steps_per_epoch = len(step_losses) // len(epoch_data) if len(epoch_data) > 0 else 0
+        ax.set_title(f'Training Loss per Step (steps/epoch: {steps_per_epoch})')
         ax.set_xlabel('Step')
         ax.set_ylabel('Loss')
         ax.grid(True, alpha=0.3)
-        
-        # Add epoch boundary lines if we have epoch data
-        if epoch_data is not None and 'epoch' in epoch_data.columns:
-            steps_per_epoch = len(step_losses) // len(epoch_data) if len(epoch_data) > 0 else 0
-            if steps_per_epoch > 0:
-                for epoch in epoch_data['epoch']:
-                    step_num = epoch * steps_per_epoch
-                    if step_num < len(step_losses):
-                        ax.axvline(x=step_num, color='red', linestyle='--', alpha=0.6)
-                
-                # Add epoch labels on the right y-axis
-                ax2 = ax.twinx()
-                ax2.set_ylabel('Epoch', color='red')
-                ax2.tick_params(axis='y', labelcolor='red')
-                
-                # Set epoch ticks
-                epoch_steps = [e * steps_per_epoch for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_losses)]
-                epoch_labels = [str(int(e)) for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_losses)]
-                
-                if epoch_steps:
-                    ax2.set_yticks(epoch_steps)
-                    ax2.set_yticklabels(epoch_labels)
-                    ax2.set_ylim(ax.get_ylim())
-        
+
         ax.legend()
     
     def _plot_learning_rate(self, ax, step_lrs, epoch_data):
@@ -122,33 +99,12 @@ class TrainingGrapher:
             return
             
         ax.plot(step_lrs, alpha=1.0, linewidth=1.5, color='green', label='Learning Rate')
-        ax.set_title('Learning Rate per Step')
+        steps_per_epoch = len(step_lrs) // len(epoch_data) if len(epoch_data) > 0 else 0
+        ax.set_title(f'Learning Rate per Step (steps/epoch: {steps_per_epoch})')
         ax.set_xlabel('Step')
         ax.set_ylabel('Learning Rate')
         ax.grid(True, alpha=0.3)
         
-        # Add epoch boundary lines if we have epoch data
-        if epoch_data is not None and 'epoch' in epoch_data.columns:
-            steps_per_epoch = len(step_lrs) // len(epoch_data) if len(epoch_data) > 0 else 0
-            if steps_per_epoch > 0:
-                for epoch in epoch_data['epoch']:
-                    step_num = epoch * steps_per_epoch
-                    if step_num < len(step_lrs):
-                        ax.axvline(x=step_num, color='red', linestyle='--', alpha=0.6)
-                
-                # Add epoch labels on the right y-axis
-                ax2 = ax.twinx()
-                ax2.set_ylabel('Epoch', color='red')
-                ax2.tick_params(axis='y', labelcolor='red')
-                
-                # Set epoch ticks
-                epoch_steps = [e * steps_per_epoch for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_lrs)]
-                epoch_labels = [str(int(e)) for e in epoch_data['epoch'] if e * steps_per_epoch < len(step_lrs)]
-                
-                if epoch_steps:
-                    ax2.set_yticks(epoch_steps)
-                    ax2.set_yticklabels(epoch_labels)
-                    ax2.set_ylim(ax.get_ylim())
         
         ax.legend()
     
@@ -169,35 +125,35 @@ class TrainingGrapher:
         ax.legend()
     
     def _plot_metrics(self, ax, epoch_data):
-        """Plot additional metrics like Dice score and comprehensive metric"""
+        """Plot additional metrics: Dice, Peak Distance, Peak Sharpness"""
         epochs = epoch_data['epoch']
-        
-        # Use twin y-axes for different metrics
-        ax2 = ax.twinx()
-        
+
+        ax.set_ylim(0, 1)
+
         # Plot Dice score
         if 'train_dice' in epoch_data.columns:
-            line1 = ax.plot(epochs, epoch_data['train_dice'], 'o-', label='Train Dice', color='green')
+            ax.plot(epochs, epoch_data['train_dice'], 'o-', label='Train Dice', color='green')
         if 'val_dice' in epoch_data.columns:
-            line2 = ax.plot(epochs, epoch_data['val_dice'], 's-', label='Val Dice', color='lightgreen')
-        
-        # Plot comprehensive metric on second y-axis
-        if 'train_comp' in epoch_data.columns:
-            line3 = ax2.plot(epochs, epoch_data['train_comp'], '^-', label='Train Comp', color='orange')
-        if 'val_comp' in epoch_data.columns:
-            line4 = ax2.plot(epochs, epoch_data['val_comp'], 'v-', label='Val Comp', color='red')
-        
+            ax.plot(epochs, epoch_data['val_dice'], 's-', label='Val Dice', color='lightgreen')
+
+        # Plot Peak Distance
+        if 'train_peak_dist' in epoch_data.columns:
+            ax.plot(epochs, epoch_data['train_peak_dist'], '^-', label='Train PeakDist', color='blue')
+        if 'val_peak_dist' in epoch_data.columns:
+            ax.plot(epochs, epoch_data['val_peak_dist'], 'v-', label='Val PeakDist', color='lightblue')
+
+        # Plot Peak Sharpness
+        if 'train_peak_sharp' in epoch_data.columns:
+            ax.plot(epochs, epoch_data['train_peak_sharp'], 'D-', label='Train PeakSharp', color='purple')
+        if 'val_peak_sharp' in epoch_data.columns:
+            ax.plot(epochs, epoch_data['val_peak_sharp'], 'd-', label='Val PeakSharp', color='violet')
+
         ax.set_title('Training Metrics')
         ax.set_xlabel('Epoch')
-        ax.set_ylabel('Dice Score', color='green')
-        ax2.set_ylabel('Comprehensive Score', color='orange')
+        ax.set_ylabel('Score')
         ax.grid(True, alpha=0.3)
-        
-        # Combine legends
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-    
+        ax.legend(loc='upper left')
+
     def _plot_topk_accuracies(self, ax, epoch_data):
         """Plot Top-K accuracies"""
         epochs = epoch_data['epoch']

@@ -3,6 +3,8 @@ import torch.nn.functional as F
 import torch
 import sys
 import logging
+import numpy as np
+
 
 def check_tensor(name, tensor, related_tensors=None):
     if torch.isnan(tensor).any():
@@ -52,7 +54,7 @@ class BasicFCBlock(nn.Module):
         """fc, bn, silu, dropout"""
         super().__init__()
         self.block = nn.Sequential(
-            nn.Linear(in_features,out_features),
+            nn.Linear(in_features,out_features, bias = False),
             nn.BatchNorm1d(out_features),
             nn.SiLU(inplace= True),
             nn.Dropout(p = p, inplace=True),
@@ -61,9 +63,9 @@ class BasicFCBlock(nn.Module):
     def forward(self,x):
         return self.block(x)
 
-    
+
 class PreActResBlock3d(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1, kernel_size=3, norm_type="gn", target_channels_per_group=4):
+    def __init__(self, in_channels, out_channels, stride=1, kernel_size=3, norm_type="gn", target_channels_per_group=4, drop_path_p = 0):
         """padding will always be dynamic to keep spatial size the same"""
         super().__init__()
         fart = kernel_size - 1
@@ -93,12 +95,15 @@ class PreActResBlock3d(nn.Module):
             )
         else:
             self.skip = nn.Identity()
+            
+        self.drop_path = DropPath(drop_path_p) if drop_path_p > 0.0 else nn.Identity()
 
     def forward(self, x):
-        return self.features(x) + self.skip(x)
-    
+        return self.drop_path(self.features(x)) + self.skip(x)  
+
+#essentially the downchanneling block but without the out channels flexibility and uses kenrel 3
 class PreActRefinementBlock3d(nn.Module):
-    def __init__(self, in_channels, kernel_size=3, norm_type="gn"):
+    def __init__(self, in_channels, kernel_size=3, norm_type="gn", drop_path_p = 0):
         """fullfat3d conv for refinement, only 1 conv"""
         super().__init__()
         fart = kernel_size - 1
@@ -114,9 +119,10 @@ class PreActRefinementBlock3d(nn.Module):
         )
         
         self.skip = nn.Identity()
+        self.drop_path = DropPath(drop_path_p) if drop_path_p > 0.0 else nn.Identity()
 
     def forward(self, x):
-        return self.features(x) + self.skip(x)  
+        return self.drop_path(self.features(x)) + self.skip(x)  
 
 
 class PreActResBottleneckBlock3d(nn.Module):
@@ -192,7 +198,7 @@ class PreActGroupPointBlock3d(nn.Module):
         return out+skip
     
 class PreActDownchannel3d(nn.Module):
-    def __init__(self, in_channels, out_channels, norm_type = 'gn'):
+    def __init__(self, in_channels, out_channels, norm_type = 'gn', drop_path_p = 0):
         """1x1 kernel preact wrapped block for downchanneling"""
         super().__init__()
         self.features = nn.Sequential(
@@ -210,13 +216,10 @@ class PreActDownchannel3d(nn.Module):
             self.skip = nn.Conv3d(in_channels, out_channels, kernel_size=1)
         else:
             self.skip = nn.Identity()
-    
+        self.drop_path = DropPath(drop_path_p) if drop_path_p > 0.0 else nn.Identity()
+
     def forward(self, x):
-        
-        out = self.features(x)
-        skip = self.skip(x)
-        return out+skip 
-    
+        return self.drop_path(self.features(x)) + self.skip(x)  
 
  
 class SEBlock3d(nn.Module):
@@ -228,15 +231,114 @@ class SEBlock3d(nn.Module):
             nn.SiLU(inplace=True),
             nn.Conv3d(channels // reduction, channels, kernel_size=1,bias = True),
         )
-    
+
     def forward(self, x):
         x = torch.clamp(x, min=-1e3, max=1e3)
         pooled = self.pool(x)
         scale = F.sigmoid(torch.clamp(self.fc(pooled),min = 1e-3, max = 1000))
         scale = torch.clamp(scale, min=1e-3, max=1.0)  # prevent zeros
 
-        
-        
+
+
         result = x * scale
 
         return result
+
+
+class DropPath(nn.Module):
+    """
+    Stochastic Depth (drop entire residual paths with given probability).
+    Randomly drops entire residual branches during training to improve regularization.
+    """
+    def __init__(self, drop_prob=0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+	
+    def forward(self, x):
+        if self.drop_prob == 0.0 or not self.training:
+            return x
+        keep_prob = 1 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()  # binarize
+        return x.div(keep_prob) * random_tensor
+
+
+class PatchEmbedding(nn.Module):
+    """
+    Patchify images into non-overlapping or overlapping patches and project to embedding dimension.
+
+    Args:
+        patch_size: Size of each patch (single int for square patches)
+        embed_dim: Output embedding dimension
+        stride: Stride for patch extraction (stride=patch_size for no overlap)
+        in_channels: Number of input channels (default 3 for RGB)
+    """
+    def __init__(self, in_channels, patch_size, embed_dim, stride =None):
+        super().__init__()
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        self.stride = patch_size if stride == None else stride
+        
+        self.proj = nn.Conv2d(
+            in_channels,
+            embed_dim,
+            kernel_size=patch_size,
+            stride=stride,
+            bias=False
+        )
+
+    def forward(self, x):
+        # x: [B, C, H, W] -> [B, embed_dim, num_patches_h, num_patches_w]
+        x = self.proj(x)
+        # Flatten spatial dimensions: [B, embed_dim, num_patches_h, num_patches_w] -> [B, embed_dim, num_patches]
+        B, C, H, W = x.shape
+        x = x.flatten(2)
+        # Transpose to sequence format: [B, embed_dim, num_patches] -> [B, num_patches, embed_dim]
+        x = x.transpose(1, 2)
+        return x
+
+
+class SelfAttentionBlock(nn.Module):
+    """
+    Multi-head self-attention block for (B, N, D) embeddings.
+
+    Args:
+        embed_dim: Embedding dimension
+        num_heads: Number of attention heads
+        dropout: Dropout probability (default 0.0)
+        bias: Whether to use bias in qkv projection (default True)
+    """
+    def __init__(self, embed_dim, num_heads, dropout=0.0, bias=True):
+        super().__init__()
+        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=bias)
+        self.attn_drop = nn.Dropout(dropout)
+        self.proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        
+
+    def forward(self, x):
+        # x: [B, N, D]
+        B, N, D = x.shape
+
+        # qkv: [B, N, 3*D] -> [B, N, 3, num_heads, head_dim] -> [3, B, num_heads, N, head_dim]
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        #windows has shit flash attention support, just use this to have cleaner code tbh
+        x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+        # Reshape: [B, num_heads, N, head_dim] -> [B, N, num_heads, head_dim] -> [B, N, D]
+        x = x.transpose(1, 2).reshape(B, N, D)
+
+        # Output projection
+        x = self.proj(x)
+
+
+        return x

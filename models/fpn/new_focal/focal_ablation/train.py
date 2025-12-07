@@ -63,8 +63,6 @@ class FocalLoss(nn.Module):
         focal_loss = torch.abs(targets-pred_prob)**self.gamma * bce_loss
         return focal_loss.mean()
 
-
-
 if __name__ == "__main__":
     
     CONFIG = {

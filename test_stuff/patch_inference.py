@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from matplotlib.patches import Circle
 import sys
+from sklearn.model_selection import train_test_split
 
 # Add transforms support
 from monai import transforms
@@ -14,14 +15,30 @@ from monai.transforms import Compose
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-from model_defs.motoridentifier import MotorIdentifier
+# from model_defs.motoridentifier import MotorIdentifier
+from model_defs._OLD_FPN import MotorIdentifier
 
-patch_dir = Path.cwd() / 'patch_pt_data' / 'tomo_d7475d'
+tomo = 'tomo_9c0253'
+patch_dir = Path.cwd() / 'data/processed/patch_pt_data' / tomo
+
+master_tomo_path = Path.cwd() / 'data/processed/patch_pt_data'
+tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
+
+train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
+
+print(f'IS TOMO IN TRAINING DATA: {tomo in train_id_list}')
+print(f'tomo list head: ')
+print(train_id_list[:10])
+tomo = train_id_list[7]
+
+
+# print("HERE")
 device = torch.device('cuda')
 model = MotorIdentifier().to(device)
-model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn/small/noaug/30subset/best.pt'))
+# print("HERE")
+model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn/focal/test2/weights/best.pt'))
 model.eval()
-
+# print("HERE")
 DOWNSAMPLING_FACTOR = 16
 GAUSSIAN_SIGMA = 12.5  # sigma in realpixel space units
 
@@ -52,6 +69,7 @@ def create_gaussian_blob(shape, center, sigmas):
     
     return gaussian
 
+# print("HERE")
 for patch_file in patch_dir.glob('*.pt'):
     print(f"\nProcessing: {patch_file.name}")
     

@@ -32,7 +32,7 @@ import numpy as np
 # import torchio as tio
 import monai
 from monai import transforms
-import math
+
 
 import torch.nn.functional as F
 
@@ -63,8 +63,6 @@ class FocalLoss(nn.Module):
         focal_loss = torch.abs(targets-pred_prob)**self.gamma * bce_loss
         return focal_loss.mean()
 
-
-
 if __name__ == "__main__":
     
     CONFIG = {
@@ -75,11 +73,11 @@ if __name__ == "__main__":
         
         # Training
         'epochs': 100,
-        'lr': 1e-3,
+        'lr': 5e-4,
         'batch_size': 1,
         'batches_per_step': 5,
         # 'steps_per_epoch': 128,
-
+        
         # Data
         'angstrom_blob_sigma': 200,
         'weight_sigma_scale': 1.5,
@@ -110,7 +108,7 @@ if __name__ == "__main__":
         'prefetch_factor': 1,
         
         # Paths
-        'save_dir': './models/fpn/new_focal/focal_ablation',
+        'save_dir': './models/fpn/focal/test2',
         'exist_ok':False,
         
         # Other
@@ -124,9 +122,9 @@ if __name__ == "__main__":
         'load_pretrained': False,
         # Model loading (only used if enabled)
         'pretrained': {
-            'model_path': None,
-            'optimizer_path': None,
-            'load_optimizer': False,
+            'model_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best.pt',
+            'optimizer_path': r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\simple_resnet/med/noaug/full2/best_optimizer.pt',
+            'load_optimizer': True,
         },
         'debug_mode': False,
 
@@ -299,9 +297,10 @@ if __name__ == "__main__":
     batch_size = CONFIG['batch_size']
     batches_per_step = CONFIG['batches_per_step']
 
+
     print(f'TOTAL EXPECTED PATCHES TRAINED: {batch_size*len(train_dataset)*epochs}')
     
-    total_steps = epochs * math.ceil(len(train_dataset) /batches_per_step)
+    total_steps = epochs *len(train_dataset)
     warmup_steps = int(CONFIG['warmup_ratio'] * total_steps)
     print(f'WARMUP STEPS: {warmup_steps}')
     
