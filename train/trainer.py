@@ -26,11 +26,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class Trainer:
 
-    def __init__(self, model, batches_per_step, train_loader, val_loader, optimizer, scheduler,
+    def __init__(self, detector, batches_per_step, train_loader, val_loader, optimizer, scheduler,
                 conf_loss_fn, device, run_dir='./models/', topk_values=[1, 5, 10, 50],
                 enable_train_metrics=True, enable_val_metrics=True):
 
-        self.model = model
+        self.detector = detector
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.batches_per_step = batches_per_step
@@ -68,8 +68,8 @@ class Trainer:
         # Initialize grapher
         self.grapher = TrainingGrapher(self.run_dir)
 
-        # Send model to device
-        self.model.to(self.device)
+        # Send detector to device
+        self.detector.to(self.device)
         
         # Initialize GradScaler for AMP
         self.scaler = torch.amp.GradScaler("cuda", enabled=True)
@@ -85,8 +85,8 @@ class Trainer:
         labels = labels.to(self.device)
 
         with torch.amp.autocast("cuda", dtype=torch.float16):
-            outputs = self.model(patches)
-            
+            outputs = self.detector(patches)
+
         conf_loss = self.conf_loss_fn(outputs, labels)
 
         return conf_loss, outputs
@@ -95,8 +95,8 @@ class Trainer:
         """Train for one epoch"""
         # Reset metrics for new epoch
         self.train_metrics.reset_trackers()
-        
-        self.model.train()
+
+        self.detector.train()
         total_batches = len(self.train_loader)
         progress_bar = tqdm(enumerate(self.train_loader), total=total_batches,
                             desc=f"Epoch {epoch_index}")
@@ -123,7 +123,7 @@ class Trainer:
             )
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=6.7)
+            torch.nn.utils.clip_grad_norm_(self.detector.parameters(), max_norm=6.7)
 
             # Step optimizer after accumulating gradients (or at end of epoch)
             if (batch_idx + 1) % self.batches_per_step == 0 or (batch_idx + 1) == total_batches:
@@ -150,8 +150,8 @@ class Trainer:
         """Validate for one epoch"""
         # Reset metrics for new epoch
         self.val_metrics.reset_trackers()
-        
-        self.model.eval()
+
+        self.detector.eval()
 
         with torch.no_grad():
             for patches, labels, global_coords in tqdm(self.val_loader, desc="Validating", leave=True, ncols=100):
@@ -177,7 +177,7 @@ class Trainer:
         csv_filepath.unlink(missing_ok=True)
         
         logger = utils.Logger()
-        logger.log_training_settings(model=self.model, save_dir=str(self.run_dir))
+        logger.log_training_settings(model=self.detector, save_dir=str(self.run_dir))
         
         best_val_loss = float('inf')
         best_model_path = self.weights_dir / 'best.pt'
@@ -226,17 +226,14 @@ class Trainer:
             # Save best model
             if val_conf_loss < best_val_loss or val_conf_loss == 0:
                 best_val_loss = val_conf_loss
-                logging.info(f"Validation loss improved. Saving model to {best_model_path}")
-                torch.save(self.model.state_dict(), best_model_path)
-                torch.save(self.optimizer.state_dict(), optimizer_path)
+                logging.info(f"Validation loss improved. Saving checkpoint to {best_model_path}")
+                self.detector.save_checkpoint(best_model_path, self.optimizer)
 
             # Periodic saves
             if save_period != 0 and (epoch + 1) % save_period == 0:
                 periodic_save_path = self.weights_dir / f"epoch{epoch}.pt"
-                periodic_optimizer_save_path = self.weights_dir / f"epoch{epoch}_optimizer.pt"
-                torch.save(self.model.state_dict(), periodic_save_path)
-                torch.save(self.optimizer.state_dict(), periodic_optimizer_save_path)
-        
+                self.detector.save_checkpoint(periodic_save_path, self.optimizer)
+                
             #create graphs after every epoch lol
             self.grapher.plot_training_progress(
                 step_losses=self.step_losses,

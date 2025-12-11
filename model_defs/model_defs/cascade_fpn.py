@@ -6,12 +6,8 @@ import torch
 from torchvision.ops import DropBlock3d
 
 
-if __name__ == '__main__':
-    import nnblock
-    from nnblock import check_tensor
-else:
-    from .. import nnblock
-    from ..nnblock import check_tensor
+from .. import nnblock
+from ..nnblock import check_tensor
     
 from itertools import product
 from torchio import GridSampler, GridAggregator
@@ -23,203 +19,158 @@ import time
 import torch.nn.functional as F
 import math
 
+from .utils import dc_growth_fn as _dc_growth_fn, power_2_rounding, growth_fn as _growth_fn, raw_growth_fn as _raw_growth_fn
 
-def get_optimal_groups(channels, preferred_groups=None, max_groups=8):
-    """
-    Determine optimal group number for grouped convolution.
-    
-    Args:
-        channels: Number of input/output channels
-        preferred_groups: Preferred number of groups (will find closest divisible)
-        max_groups: Maximum number of groups to consider
-    
-    Returns:
-        int: Optimal number of groups
-    """
-    if preferred_groups is None:
-        # Find all divisors of channels up to max_groups
-        divisors = [i for i in range(1, min(channels, max_groups) + 1) if channels % i == 0]
-        # Return the largest divisor (most grouping while staying efficient)
-        return max(divisors) if divisors else 1
-    else:
-        # Find closest divisible number to preferred_groups
-        for offset in range(min(preferred_groups, channels)):
-            # Try preferred_groups - offset
-            if preferred_groups - offset > 0 and channels % (preferred_groups - offset) == 0:
-                return preferred_groups - offset
-            # Try preferred_groups + offset
-            if preferred_groups + offset <= channels and channels % (preferred_groups + offset) == 0:
-                return preferred_groups + offset
-        # Fallback to 1 if no divisible groups found
-        print(f'WARNING get_optimal_groups returned 1, depthwise basically')
-        return 1
 
-def make_gp_stack(ch, num_blocks, groups, norm_type):
-    return nn.Sequential(*[
-        nnblock.PreActGroupPointBlock3d(ch, ch,groups = get_optimal_groups(ch, groups), norm_type = norm_type) for _ in range(num_blocks)
-    ])
+class CascadeFPN(nn.Module):
 
-class MotorIdentifier(nn.Module):
-    
-    def __init__(self, dropout_p=0, drop_path_p = 0, norm_type="gn"):
+    def __init__(self, base_features, growth_rate, downchanneling_factor, dropout_p=0, drop_path_p=0):
         super().__init__()
         self.dropout_p = dropout_p
         self.drop_path_p = drop_path_p
-        F_I = 4  # base feature count
-        # FEATURE_PROGRESSION = [18,40,96,200,420]
-        G_R = 2.32
-        
-        
-        DC = 2 #downchanneling factor
-        # print(f'F_I, feature_prssioon, DC: {F_I}, {}, {DC}')
-        
-        def raw_growth_fn(level):
-            return int(F_I * (G_R ** level))  
-            # return FEATURE_PROGRESSION[level-1]
-            
-        def power_2_rounding(raw_num):
-            sqrt_val = math.sqrt(raw_num)
-            rounding_factor = 2 ** int(math.log2(sqrt_val))
-            return int(((raw_num + rounding_factor - 1) // rounding_factor) * rounding_factor)
-        
-        def growth_fn(level):
-            #rounds to floor power of 2 (log2(raw))
-            #raw=15 → sqrt=3.87 → log2=1.95 → floor=1 → round to 2^1=2 → 16
-            #raw 256 => sqrt 16 log2 = > 4 floor round to nearest 2^4 = 16
-            return power_2_rounding(raw_growth_fn(level))
-        
-        def dc_growth_fn(level):
-            return power_2_rounding(raw_growth_fn(level)/DC)
+        F_I = base_features
+        G_R = growth_rate
+        DC = downchanneling_factor
+
+        # Local wrappers that capture F_I, G_R, DC
+        def gf(level):
+            return _growth_fn(level, F_I, G_R)
+
+        def dcf(level):
+            return _dc_growth_fn(level, F_I, G_R, DC)
+
+        def rgf(level):
+            return _raw_growth_fn(level, F_I, G_R)
 
         def cascade_in(level):
             if level == 1:
-                return dc_growth_fn(1)  # first cascade takes full interp_2
+                return dcf(1)
             else:
-                return power_2_rounding(dc_growth_fn(level-1)/G_R) + dc_growth_fn(level)
+                return power_2_rounding(dcf(level-1)/G_R) + dcf(level)
 
         def cascade_out(level):
-            return power_2_rounding(dc_growth_fn(level)/G_R)
+            return power_2_rounding(dcf(level)/G_R)
 
         def skip_out(level):
-            return power_2_rounding(dc_growth_fn(level)/DC)
+            return power_2_rounding(dcf(level)/DC)
 
-        def head_growth_fn(level):
-            #head input is cascade_out(5) + all DOWNCHANNELED skip connections
-            head_input = cascade_out(5) + sum([skip_out(i) for i in range(1,6)])
+        def hgf(level):
+            # head input is cascade_out(5) + all DOWNCHANNELED skip connections
+            head_input = cascade_out(5) + sum([skip_out(i) for i in range(1, 6)])
             return head_input if level == 5 else power_2_rounding(head_input/(DC**(5-level)))
-            
+        
         
         self.stem = nn.Conv3d(1, F_I, kernel_size=5, stride=1, padding=2)
-        
+
         self.enc_2 = nn.Sequential(
-            nnblock.PreActResBlock3d(F_I, growth_fn(1), stride=2, kernel_size=3, norm_type=norm_type, drop_path_p = drop_path_p),
-            nnblock.PreActResBlock3d(growth_fn(1), growth_fn(1), kernel_size=3, norm_type= norm_type, drop_path_p=drop_path_p)
+            nnblock.PreActResBlock3d(F_I, gf(1), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(1), gf(1), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p)
         )
         self.enc_4 = nn.Sequential(
-            nnblock.PreActResBlock3d(growth_fn(1), growth_fn(2), stride=2, kernel_size=3, norm_type=norm_type, drop_path_p = drop_path_p),
-            nnblock.PreActResBlock3d(growth_fn(2), growth_fn(2), kernel_size=3, norm_type= norm_type, drop_path_p=drop_path_p)
+            nnblock.PreActResBlock3d(gf(1), gf(2), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(2), gf(2), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p)
         )
         self.enc_8 = nn.Sequential(
-            nnblock.PreActResBlock3d(growth_fn(2), growth_fn(3), stride=2, kernel_size=3, norm_type=norm_type, drop_path_p = drop_path_p),
+            nnblock.PreActResBlock3d(gf(2), gf(3), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
         )
         self.enc_16 = nn.Sequential(
-            nnblock.PreActResBlock3d(growth_fn(3), growth_fn(4), stride=2, kernel_size=3, norm_type=norm_type, drop_path_p = drop_path_p),
+            nnblock.PreActResBlock3d(gf(3), gf(4), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
         )
         self.enc_32 = nn.Sequential(
-            nnblock.PreActResBlock3d(growth_fn(4), growth_fn(5), stride=2, kernel_size=3, norm_type=norm_type, drop_path_p = drop_path_p),
+            nnblock.PreActResBlock3d(gf(4), gf(5), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
         )
-        
+
         self.interp_r_2 = nn.Sequential(
-            nnblock.PreActDownchannel3d(growth_fn(1), dc_growth_fn(1), drop_path_p = drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(1)),
-            nnblock.SEBlock3d(dc_growth_fn(1), reduction=4),
-            nnblock.PreActRefinementBlock3d(dc_growth_fn(1), drop_path_p=drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(1)),
+            nnblock.PreActDownchannel3d(gf(1), dcf(1), drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", dcf(1)),
+            nnblock.SEBlock3d(dcf(1), reduction=4),
+            nnblock.PreActRefinementBlock3d(dcf(1), drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", dcf(1)),
             nn.SiLU(inplace=True)
         )
         self.interp_r_4 = nn.Sequential(
-            nnblock.PreActDownchannel3d(growth_fn(2), dc_growth_fn(2), drop_path_p = drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(2)),
-            nnblock.SEBlock3d(dc_growth_fn(2), reduction=4),
-            nnblock.PreActRefinementBlock3d(dc_growth_fn(2), drop_path_p=drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(2)),
+            nnblock.PreActDownchannel3d(gf(2), dcf(2), drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", dcf(2)),
+            nnblock.SEBlock3d(dcf(2), reduction=4),
+            nnblock.PreActRefinementBlock3d(dcf(2), drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", dcf(2)),
             nn.SiLU(inplace=True)
         )
         self.interp_r_8 = nn.Sequential(
-            nnblock.PreActDownchannel3d(growth_fn(3), dc_growth_fn(3), drop_path_p = drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(3)),
-            nnblock.SEBlock3d(dc_growth_fn(3), reduction=4),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(3)),
+            nnblock.PreActDownchannel3d(gf(3), dcf(3), drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", dcf(3)),
+            nnblock.SEBlock3d(dcf(3), reduction=4),
+            nnblock.get_norm_layer("gn", dcf(3)),
             nn.SiLU(inplace=True)
         )
         self.interp_r_16 = nn.Sequential(
-            nnblock.PreActDownchannel3d(growth_fn(4), dc_growth_fn(4), drop_path_p = drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(4)),
-            nnblock.SEBlock3d(dc_growth_fn(4), reduction=4),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(4)),
+            nnblock.PreActDownchannel3d(gf(4), dcf(4), drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", dcf(4)),
+            nnblock.SEBlock3d(dcf(4), reduction=4),
+            nnblock.get_norm_layer("gn", dcf(4)),
             nn.SiLU(inplace=True)
         )
         self.interp_r_32 = nn.Sequential(
-            nnblock.PreActDownchannel3d(growth_fn(5), dc_growth_fn(5), drop_path_p = drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(5)),
-            nnblock.SEBlock3d(dc_growth_fn(5), reduction=4),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=dc_growth_fn(5)),
+            nnblock.PreActDownchannel3d(gf(5), dcf(5), drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", dcf(5)),
+            nnblock.SEBlock3d(dcf(5), reduction=4),
+            nnblock.get_norm_layer("gn", dcf(5)),
             nn.SiLU(inplace=True)
         )
 
         # Skip downchannel blocks for head skip connections
         self.skip_downchannel_2 = nn.Sequential(
-            nn.Conv3d(dc_growth_fn(1), skip_out(1), kernel_size=1, bias=False),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=skip_out(1)),
+            nn.Conv3d(dcf(1), skip_out(1), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(1)),
         )
         self.skip_downchannel_4 = nn.Sequential(
-            nn.Conv3d(dc_growth_fn(2), skip_out(2), kernel_size=1, bias=False),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=skip_out(2)),
+            nn.Conv3d(dcf(2), skip_out(2), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(2)),
         )
         self.skip_downchannel_8 = nn.Sequential(
-            nn.Conv3d(dc_growth_fn(3), skip_out(3), kernel_size=1, bias=False),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=skip_out(3)),
+            nn.Conv3d(dcf(3), skip_out(3), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(3)),
         )
         self.skip_downchannel_16 = nn.Sequential(
-            nn.Conv3d(dc_growth_fn(4), skip_out(4), kernel_size=1, bias=False),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=skip_out(4)),
+            nn.Conv3d(dcf(4), skip_out(4), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(4)),
         )
         self.skip_downchannel_32 = nn.Sequential(
-            nn.Conv3d(dc_growth_fn(5), skip_out(5), kernel_size=1, bias=False),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=skip_out(5)),
+            nn.Conv3d(dcf(5), skip_out(5), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(5)),
         )
 
         #on our diagram this cascade processing block is the same level as the number in its name
         #usage: takes in current level interp'd output concat with previous level output
-        
+
         self.cascade_2 = nn.Sequential(
             nn.Conv3d(cascade_in(1), cascade_out(1), kernel_size=1),
             nnblock.PreActRefinementBlock3d(cascade_out(1), drop_path_p=drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=cascade_out(1)),
+            nnblock.get_norm_layer("gn", cascade_out(1)),
             nn.SiLU(inplace=True)
         )
         self.cascade_4 = nn.Sequential(
             nn.Conv3d(cascade_in(2), cascade_out(2), kernel_size=1),
             nnblock.PreActRefinementBlock3d(cascade_out(2), drop_path_p=drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=cascade_out(2)),
+            nnblock.get_norm_layer("gn", cascade_out(2)),
             nn.SiLU(inplace=True)
         )
         self.cascade_8 = nn.Sequential(
             nn.Conv3d(cascade_in(3), cascade_out(3), kernel_size=1),
             nnblock.PreActRefinementBlock3d(cascade_out(3), drop_path_p=drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=cascade_out(3)),
+            nnblock.get_norm_layer("gn", cascade_out(3)),
             nn.SiLU(inplace=True)
         )
         self.cascade_16 = nn.Sequential(
             nn.Conv3d(cascade_in(4), cascade_out(4), kernel_size=1),
             nnblock.PreActRefinementBlock3d(cascade_out(4), drop_path_p=drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=cascade_out(4)),
+            nnblock.get_norm_layer("gn", cascade_out(4)),
             nn.SiLU(inplace=True)
         )
         self.cascade_32 = nn.Sequential(
             nn.Conv3d(cascade_in(5), cascade_out(5), kernel_size=1),
             nnblock.PreActRefinementBlock3d(cascade_out(5), drop_path_p=drop_path_p),
-            nnblock.get_norm_layer(norm_type=norm_type, num_channels=cascade_out(5)),
+            nnblock.get_norm_layer("gn", cascade_out(5)),
             # nn.SiLU(inplace=True) #dont activate last one since the head starts with an SE block
         )
         
@@ -231,14 +182,13 @@ class MotorIdentifier(nn.Module):
             self.cascade_2, self.cascade_4, self.cascade_8, self.cascade_16, self.cascade_32
         ])
         
-        raw_feature_progression = [raw_growth_fn(i) for i in [1, 2, 3, 4, 5]]
+        raw_feature_progression = [rgf(i) for i in [1, 2, 3, 4, 5]]
         print(f'raw feature progression in backbone: {F_I}, {raw_feature_progression}')
-        
-        feature_progression = [growth_fn(i) for i in [1, 2, 3, 4, 5]]
+
+        feature_progression = [gf(i) for i in [1, 2, 3, 4, 5]]
         print(f'feature progression in backbone: {F_I}, {feature_progression}')
 
-        downchannel_progression = [dc_growth_fn(i) for i in [1, 2, 3, 4, 5]]
-        
+        downchannel_progression = [dcf(i) for i in [1, 2, 3, 4, 5]]
         print(f'after downchanneling : {downchannel_progression}')
 
         # cascade channel progression (lean)
@@ -246,16 +196,16 @@ class MotorIdentifier(nn.Module):
         print(f'cascade progression (in->out): {cascade_progression}')
         skip_progression = [skip_out(i) for i in range(1, 6)]
         print(f'skip downchannel progression: {skip_progression}, sum: {sum(skip_progression)}')
-        print(f'head input: {head_growth_fn(5)}')
-        print(f'head progression: {[head_growth_fn(i) for i in [5,4,3,2,1]]}, 1')
-        
+        print(f'head input: {hgf(5)}')
+        print(f'head progression: {[hgf(i) for i in [5, 4, 3, 2, 1]]}, 1')
+
         self.head = nn.Sequential(
             nn.Dropout3d(p=self.dropout_p),
-            nnblock.SEBlock3d(head_growth_fn(5)),#theoretically interp and cascade should have norm outputs so
-            nn.Conv3d(head_growth_fn(5), head_growth_fn(4), kernel_size=1, bias = False),#raw inputs
-            nnblock.PreActResBlock3d(head_growth_fn(4), head_growth_fn(3), kernel_size=3, drop_path_p = drop_path_p),
-            nnblock.PreActResBlock3d(head_growth_fn(3),head_growth_fn(2), kernel_size=3, drop_path_p = drop_path_p),
-            nnblock.PreActDownchannel3d(head_growth_fn(2), 1, drop_path_p=drop_path_p),
+            nnblock.SEBlock3d(hgf(5)),
+            nn.Conv3d(hgf(5), hgf(4), kernel_size=1, bias=False),
+            nnblock.PreActResBlock3d(hgf(4), hgf(3), kernel_size=3, drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(hgf(3), hgf(2), kernel_size=3, drop_path_p=drop_path_p),
+            nnblock.PreActDownchannel3d(hgf(2), 1, drop_path_p=drop_path_p),
         )
 
     def forward(self, x):
@@ -331,27 +281,6 @@ class MotorIdentifier(nn.Module):
         
         return results
 
-
-    @torch.inference_mode()
-    def inference(self, tomo_tensor, batch_size, patch_size, overlap, device, tqdm_progress:bool, sigma_scale = 1/8, mode = 'gaussian'):
-        # sigmoid_model = MotorIdentifierWithSigmoid(self)
-        inferer = monai.inferers.inferer.SlidingWindowInferer(
-            roi_size=patch_size, sw_batch_size=batch_size, overlap=overlap, 
-            mode=mode, sigma_scale=sigma_scale, device=device, 
-            progress=tqdm_progress, buffer_dim=0
-        )
-        
-        with torch.amp.autocast(device_type="cuda"):
-            results = inferer(inputs=tomo_tensor, network=self)
-        
-
-        del inferer
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        return torch.sigmoid(results)
-    
-        
     def print_params(self):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
 
@@ -391,25 +320,7 @@ class MotorIdentifier(nn.Module):
         )
 
 
-        
-class MotorIdentifierWithSigmoid(torch.nn.Module):
-    def __init__(self, base_model):
-        super().__init__()
-        self.base_model = base_model
-        
-    def forward(self, x):
-        return torch.sigmoid(self.base_model(x))
-    
-    # def _get_start_indices(self,length, window_size, stride):
-    #     indices = []
-    #     n_windows = (length - window_size) // stride + 1
-    #     for i in range(n_windows):
-    #         start = i * stride
-    #         indices.append(start)
-    #     last_start = (n_windows - 1) * stride
-    #     if last_start + window_size < length:
-    #         indices.append(length - window_size)
-    #     return indices
+
 
 if __name__ == '__main__':
     model = MotorIdentifier()

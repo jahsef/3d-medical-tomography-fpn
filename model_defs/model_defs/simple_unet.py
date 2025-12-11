@@ -5,14 +5,10 @@ import torch.nn as nn
 import torch
 from torchvision.ops import DropBlock3d
 
+from .. import nnblock
+from ..nnblock import check_tensor
+from .utils import growth_fn as _growth_fn
 
-if __name__ == '__main__':
-    import nnblock
-    from nnblock import check_tensor
-else:
-    from . import nnblock
-    from .nnblock import check_tensor
-    
 from itertools import product
 from torchio import GridSampler, GridAggregator
 import torchio as tio
@@ -23,72 +19,42 @@ import time
 import torch.nn.functional as F
 
 
-def get_optimal_groups(channels, preferred_groups=None, max_groups=8):
-    """
-    Determine optimal group number for grouped convolution.
-    
-    Args:
-        channels: Number of input/output channels
-        preferred_groups: Preferred number of groups (will find closest divisible)
-        max_groups: Maximum number of groups to consider
-    
-    Returns:
-        int: Optimal number of groups
-    """
-    if preferred_groups is None:
-        # Find all divisors of channels up to max_groups
-        divisors = [i for i in range(1, min(channels, max_groups) + 1) if channels % i == 0]
-        # Return the largest divisor (most grouping while staying efficient)
-        return max(divisors) if divisors else 1
-    else:
-        # Find closest divisible number to preferred_groups
-        for offset in range(min(preferred_groups, channels)):
-            # Try preferred_groups - offset
-            if preferred_groups - offset > 0 and channels % (preferred_groups - offset) == 0:
-                return preferred_groups - offset
-            # Try preferred_groups + offset
-            if preferred_groups + offset <= channels and channels % (preferred_groups + offset) == 0:
-                return preferred_groups + offset
-        # Fallback to 1 if no divisible groups found
-        print(f'WARNING get_optimal_groups returned 1, depthwise basically')
-        return 1
-
-def make_gp_stack(ch, num_blocks, groups, norm_type):
-    return nn.Sequential(*[
-        nnblock.PreActGroupPointBlock3d(ch, ch,groups = get_optimal_groups(ch, groups), norm_type = norm_type) for _ in range(num_blocks)
-    ])
-
-
-class MotorIdentifier(nn.Module):
-    
-    def __init__(self,initial_features = 12, dropout_p=0, norm_type="gn"):
+class SimpleUNET(nn.Module):
+    def __init__(self, base_features, growth_rate, dropout_p=0, drop_path_p=0):
         super().__init__()
         self.dropout_p = dropout_p
-        
-        self.stem = nn.Conv3d(1,8,kernel_size=5,padding=2,bias=False)
-        
+        self.drop_path_p = drop_path_p
+        F_I = base_features
+        G_R = growth_rate
+
+        # Local wrapper that captures F_I, G_R
+        def gf(level):
+            return _growth_fn(level, F_I, G_R)
+
+        self.stem = nn.Conv3d(1, F_I, kernel_size=5, padding=2, bias=False)
+
         self.backbone = nn.Sequential(
-            nnblock.PreActResBlock3d(8, 16, stride = 2),#1/2
-            nnblock.PreActResBlock3d(16, 32, stride = 2),#1/4
-            nnblock.PreActResBlock3d(32, 64, stride = 2),#1/8
-            nnblock.PreActResBlock3d(64, 64),
-            nnblock.PreActResBlock3d(64, 128, stride = 2),#1/16
-            nnblock.PreActResBlock3d(128, 128),
-            nnblock.PreActResBlock3d(128, 256, stride = 2),#1/32
-            nnblock.PreActResBlock3d(256, 256),
+            nnblock.PreActResBlock3d(F_I, gf(1), stride=2, norm_type="gn", drop_path_p=drop_path_p),  # 1/2
+            nnblock.PreActResBlock3d(gf(1), gf(2), stride=2, norm_type="gn", drop_path_p=drop_path_p),  # 1/4
+            nnblock.PreActResBlock3d(gf(2), gf(3), stride=2, norm_type="gn", drop_path_p=drop_path_p),  # 1/8
+            nnblock.PreActResBlock3d(gf(3), gf(3), norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(3), gf(4), stride=2, norm_type="gn", drop_path_p=drop_path_p),  # 1/16
+            nnblock.PreActResBlock3d(gf(4), gf(4), norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(4), gf(5), stride=2, norm_type="gn", drop_path_p=drop_path_p),  # 1/32
+            nnblock.PreActResBlock3d(gf(5), gf(5), norm_type="gn", drop_path_p=drop_path_p),
         )
 
         self.head = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode = 'trilinear', align_corners=False),
+            nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False),
             nn.Dropout3d(p=self.dropout_p),
-            nnblock.PreActResBlock3d(256,128, kernel_size=3),
-            nnblock.PreActResBlock3d(128,32, kernel_size=3),
-            # nnblock.PreActResBlock3d(STEM_FEATURES*4,1, kernel_size=1, target_channels_per_group=4)
-            nnblock.get_norm_layer(num_channels =32, norm_type = 'gn'),
+            nnblock.PreActResBlock3d(gf(5), gf(4), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(4), gf(3), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(3), gf(2), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.get_norm_layer("gn", gf(2)),
             nn.SiLU(inplace=True),
-            nn.Conv3d(32,1, kernel_size=1, bias = False)
+            nn.Conv3d(gf(2), 1, kernel_size=1, bias=False)
         )
-    
+
     
     def forward(self, x):
         input_x = x
@@ -101,25 +67,6 @@ class MotorIdentifier(nn.Module):
         assert not torch.isnan(x).any(), 'head nan'
         return x
 
-    
-    @torch.inference_mode()
-    def inference(self, tomo_tensor, batch_size, patch_size, overlap, device, tqdm_progress:bool, sigma_scale = 1/8, mode = 'gaussian'):
-        # sigmoid_model = MotorIdentifierWithSigmoid(self)
-        inferer = monai.inferers.inferer.SlidingWindowInferer(
-            roi_size=patch_size, sw_batch_size=batch_size, overlap=overlap, 
-            mode=mode, sigma_scale=sigma_scale, device=device, 
-            progress=tqdm_progress, buffer_dim=0
-        )
-        
-        with torch.amp.autocast(device_type="cuda"):
-            results = inferer(inputs=tomo_tensor, network=self)
-        
-
-        del inferer
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        return torch.sigmoid(results)
     
         
     def print_params(self):
@@ -140,5 +87,5 @@ class MotorIdentifier(nn.Module):
 
 
 if __name__ == '__main__':
-    model = MotorIdentifier()
+    model = SimpleUNET(base_features=5, growth_rate=2)
     model.print_params()
