@@ -13,7 +13,7 @@ from model_defs.nnblock import check_tensor
 
 
 
-def generate_gaussian_label(grid_d, grid_h, grid_w, motor_coords, blob_sigma_pixels, center_coords, weight_sigma_pixels, target_device='cpu'):
+def generate_gaussian_label(grid_d, grid_h, grid_w, motor_coords, blob_sigma_pixels, center_coords, target_device='cpu'):
     """
     Generate gaussian blob and apply weighting on target device with no intermediate transfers.
     Assumes input grids are already on target_device.
@@ -22,20 +22,15 @@ def generate_gaussian_label(grid_d, grid_h, grid_w, motor_coords, blob_sigma_pix
         torch.Tensor: Weighted gaussian label on target_device
     """
     label_d, label_h, label_w = motor_coords
-    center_d, center_h, center_w = center_coords
     
     # Gaussian blob computation on target device
     gaussian_blob = torch.exp(-((grid_d-label_d)**2 + 
                                (grid_h-label_h)**2 + 
                                (grid_w-label_w)**2)/(2*blob_sigma_pixels**2)).to(torch.float16).unsqueeze(0)
-    
-    # Gaussian weighting computation on same device
-    gaussian_weight = torch.exp(-((grid_d-center_d)**2 + 
-                                 (grid_h-center_h)**2 + 
-                                 (grid_w-center_w)**2)/(2*weight_sigma_pixels**2)).to(torch.float16).unsqueeze(0)
+
     
     # Apply weighting and return result on target device
-    return gaussian_blob * gaussian_weight
+    return gaussian_blob 
 
 
 def downsample(dense_label, downsampling_factor, target_device=None):
@@ -65,7 +60,7 @@ def downsample(dense_label, downsampling_factor, target_device=None):
 
 
 class PatchTomoDataset(torch.utils.data.Dataset):
-    def __init__(self, angstrom_blob_sigma:float, sigma_scale:float, downsampling_factor:int, 
+    def __init__(self, angstrom_blob_sigma:float, downsampling_factor:int, 
                  patch_index_path: Path = Path.cwd() / '_patch_index.csv',
                  dataset_path: Path = Path.cwd() / 'data/processed/patch_pt_data',
                  labels_path: Path = Path.cwd() / 'data/original_data/train_labels.csv',
@@ -73,6 +68,7 @@ class PatchTomoDataset(torch.utils.data.Dataset):
                  verbose_profiling: bool = False, processing_device: str = None):
         """
         Args:
+            angstrom_blob_sigma (float) : gaussian blob sigma in angstroms (will be divided using GT angstrom per voxel data to get voxel space sigma)
             patch_index_path (Path): Path to patch index CSV
             dataset_path (Path): Path to processed patch data directory
             labels_path (Path): Path to train labels CSV
@@ -136,7 +132,6 @@ class PatchTomoDataset(torch.utils.data.Dataset):
         
         self.transform = transform
         self.angstrom_blob_sigma = angstrom_blob_sigma
-        self.sigma_scale = sigma_scale
         self.downsampling_factor = downsampling_factor
         
         init_elapsed = (time.perf_counter() - init_start) * 1000
@@ -238,18 +233,13 @@ class PatchTomoDataset(torch.utils.data.Dataset):
             if self.verbose_profiling:
                 logging.debug(f"[WEIGHT_PARAMS] Patch center: ({center_d:.1f}, {center_h:.1f}, {center_w:.1f})")
             
-            # Spherical weighting gaussian too
-            weight_sigma_pixels = self.sigma_scale * min([d_i, h_i, w_i])
-            if self.verbose_profiling:
-                logging.debug(f"[WEIGHT_PARAMS] Weight sigma: {weight_sigma_pixels:.2f} pixels (scale: {self.sigma_scale})")
-            
+
             # Combined gaussian blob generation and weighting in single GPU operation
             gaussian_start = time.perf_counter()
             dense_label = generate_gaussian_label(grid_d, grid_h, grid_w,
                                                  (label_d, label_h, label_w),
                                                  blob_sigma_pixels,
                                                  (center_d, center_h, center_w),
-                                                 weight_sigma_pixels,
                                                  target_device=self.processing_device)
             check_tensor("dense_label after Gaussian generation", dense_label)
             gaussian_elapsed = (time.perf_counter() - gaussian_start) * 1000
@@ -457,14 +447,13 @@ if __name__ == '__main__':
     # Create dataset with patches_per_batch parameter
     dataset = PatchTomoDataset(
         angstrom_blob_sigma=200,
-        sigma_scale=1.5,
         downsampling_factor=16,
         # patch_index_path=Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\_patch_index.csv'),
         # tomo_id_list=['tomo_d7475d'],
         transform = train_transform,
-        processing_device=torch.device('cuda'),
-        debug_visualization=False,
-        verbose_profiling=False
+        processing_device=torch.device('cpu'),
+        debug_visualization=True,
+        verbose_profiling=True
     )
     
     # DataLoader will handle batching normally

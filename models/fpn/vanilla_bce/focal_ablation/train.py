@@ -18,8 +18,8 @@ import sys
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 #added model_defs to path
-from model_defs.motoridentifier import MotorIdentifier
-from model_defs._OLD_FPN import MotorIdentifier as FPNModel
+from model_defs.simple_unet import MotorIdentifier
+from model_defs.parallel_fpn import MotorIdentifier as FPNModel
 from sklearn.model_selection import train_test_split
 
 import utils

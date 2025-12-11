@@ -18,8 +18,8 @@ import sys
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 #added model_defs to path
-from model_defs.motoridentifier import MotorIdentifier
-from model_defs._OLD_FPN import MotorIdentifier as FPNModel
+from model_defs.simple_unet import MotorIdentifier
+from model_defs.parallel_fpn import MotorIdentifier as FPNModel
 from sklearn.model_selection import train_test_split
 
 import utils
@@ -37,58 +37,129 @@ import math
 import torch.nn.functional as F
 
 
+class PeakBCELoss(nn.Module):
+    def __init__(self, epsilon:float, lambda_param:float, reduction = 'mean'):
+        """PeakBCELoss for continuous regression targets [0,1]. can focus on peaks or be used without peak weighting.
 
-class WeightedBCELoss(nn.Module):
-    def __init__(self, pos_weight=10.0, reduction = 'mean'):
+        Args:
+            epsilon (float) : if target is all 0s, then this is the total weight. so its roughly epsilon vs peak weight (about 15-40 for 10x18x18 sigma about 1.3 (read patchtomodataset.py for more info on how gaussian is computed))
+            lambda_param (float): [1,inf), 1 places no emphasis on peaks, anything above 1 weights peaks higher
+            
+            reduction (str, optional): _description_. Defaults to 'mean'.
+        """
         super().__init__()
-        self.pos_weight = pos_weight
+        self.epsilon = epsilon
+        self.lambda_param = lambda_param
         self.reduction = reduction
     
     def forward(self, inputs, targets):
-        # Weight based on target values - higher targets get more weight
-        weights = 1.0 + (targets * self.pos_weight)
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        weighted_loss = bce_loss * weights
+        extra_peak_weighting = targets ** self.lambda_param
+        background_suppression_weighting = self.epsilon + targets #small base weight for background regardless
+        weights = background_suppression_weighting + extra_peak_weighting
+        #normalizing epsilon by patch.numel() makes it patch size invariant
+        #so total background weight is now epsilon * total_peak_weight
+        #for example when eps = 0.1, total_background_weight = 0.1 * total_peak_weight
         
+        #centernet style: y^lambda + (1 - y)^ beta (explicitly tunable background weighting but adds weird nonlinear hyperparam)
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        weighted_loss =  bce_loss * weights
+    #     print(f"Weight stats: min={weights.min():.6f}, max={weights.max():.6f}, "
+    #   f"mean={weights.mean():.6f}, peak_sum={total_peak_weight:.2f}")
         return weighted_loss.mean() if self.reduction == 'mean' else weighted_loss
 
+# class WeightedBCELoss(nn.Module):
+#     def __init__(self, pos_weight=10.0, reduction = 'mean'):
+#         super().__init__()
+#         self.pos_weight = pos_weight
+#         self.reduction = reduction
+    
+#     def forward(self, inputs, targets):
+#         # Weight based on target values - higher targets get more weight
+#         weights = 1.0 + (targets * self.pos_weight)
+#         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+#         weighted_loss = bce_loss * weights
+        
+#         return weighted_loss.mean() if self.reduction == 'mean' else weighted_loss
+
 class FocalLoss(nn.Module):
-    def __init__(self, pos_weight, gamma=1.0):
+    def __init__(self, epsilon, lambda_param, gamma=1.0):
         super().__init__()
         self.gamma = gamma
-        self.weighted_bce = WeightedBCELoss(pos_weight=pos_weight, reduction='none')
+        self.weighted_bce = PeakBCELoss(epsilon = epsilon, lambda_param=lambda_param, reduction='none')
     def forward(self, inputs, targets):
         bce_loss = self.weighted_bce(inputs, targets)
         pred_prob = F.sigmoid(inputs)
         focal_loss = torch.abs(targets-pred_prob)**self.gamma * bce_loss
         return focal_loss.mean()
 
+
+class CornerNetFocalLoss(nn.Module):
+    def __init__(self, alpha=2.0, beta=4.0):
+        """CornerNet-style focal loss for heatmap regression.
+        
+        Args:
+            alpha: focal power for hard examples (default 2)
+            beta: gaussian penalty reduction power (default 4)
+        """
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+    
+    def forward(self, inputs, targets):
+        """
+        Args:
+            inputs: predicted logits [B, C, H, W]
+            targets: ground truth heatmaps with gaussian bumps [B, C, H, W]
+        """
+        pred = torch.sigmoid(inputs)
+        pred = torch.clamp(pred, min=1e-6, max=1 - 1e-6)
+        
+        # Positive loss: -(1-p)^α * log(p) 
+        # Applied where y = 1 (peak centers)
+        pos_loss = -((1 - pred) ** self.alpha) * torch.log(pred)
+        
+        # Negative loss: -(1-y)^β * p^α * log(1-p)
+        # Applied where y < 1 (background and gaussian falloff)
+        # (1-y)^β reduces penalty near peaks (gaussian bumps)
+        neg_loss = -((1 - targets) ** self.beta) * (pred ** self.alpha) * torch.log(1 - pred)
+        
+        # Use positive loss where targets are 1 (or very close to 1)
+        # Use negative loss elsewhere
+        loss = torch.where(targets >= 0.90, pos_loss, neg_loss)
+        #modified to be 0.90 since our peaks arent always super close to 1 due to our weighting
+        
+        return loss.mean()
+
+
 if __name__ == "__main__":
     
     CONFIG = {
         # Model
-        'dropout_p': 0.00,
-        'drop_path_p': 0.00,
+        'dropout_p': 0.05,
+        'drop_path_p': 0.075,
         'norm_type': 'gn',
         
         # Training
         'epochs': 100,
-        'lr': 1e-3,
+        'lr': 5e-4,
         'batch_size': 1,
         'batches_per_step': 5,
         # 'steps_per_epoch': 128,
-
+        
         # Data
         'angstrom_blob_sigma': 200,
         'weight_sigma_scale': 1.5,
         'downsampling_factor': 16,
-        'train_size': 0.25,  
+        'train_size': 0.95,  
         'random_state': 42,
         
         # Loss
-        'loss_function': 'focal',  # 'vanilla_bce', 'weighted_bce', 'focal'
-        'pos_weight': 3,
+        'loss_function': 'cornernet',  # 'vanilla_bce', 'weighted_bce', 'focal', 'cornernet'
+        'epsilon' : 0.01,#base background weighting
+        'lambda_param': 2, #power peak weighting, targets ^ lambda; targets [0,1]
         'gamma': 1.2,  # For focal loss
+        'alpha': 2.0,  # CenterNet focal power for hard examples
+        'beta': 4.0,   # CenterNet background suppression near peaks
         
         
         # Optimizer
@@ -102,13 +173,13 @@ if __name__ == "__main__":
         
         # DataLoader
         'num_workers': 4,
-        'val_workers': 2,
+        'val_workers': 1,
         'pin_memory': False,
         'persistent_workers': True,
         'prefetch_factor': 1,
         
         # Paths
-        'save_dir': './models/fpn/new_focal/focal_ablation',
+        'save_dir': './models/fpn/cornernet/full_train',
         'exist_ok':False,
         
         # Other
@@ -255,10 +326,13 @@ if __name__ == "__main__":
         conf_loss_fn = WeightedBCELoss(pos_weight=CONFIG['pos_weight'])
         print(f"Using weighted BCE loss with pos_weight={CONFIG['pos_weight']}")
     elif CONFIG['loss_function'] == 'focal':
-        conf_loss_fn = FocalLoss(pos_weight=CONFIG['pos_weight'], gamma=CONFIG['gamma'])
-        print(f"Using focal loss with pos_weight={CONFIG['pos_weight']}, gamma={CONFIG['gamma']}")
+        conf_loss_fn = FocalLoss(epsilon =CONFIG['epsilon'], lambda_param=CONFIG['lambda_param'], gamma=CONFIG['gamma'])
+        print(f"Using focal loss with lambda_param={CONFIG['lambda_param']}, gamma={CONFIG['gamma']}")
+    elif CONFIG['loss_function'] == 'cornernet':
+        conf_loss_fn = CornerNetFocalLoss(alpha=CONFIG['alpha'], beta=CONFIG['beta'])
+        print(f"Using Cornernet focal loss with alpha={CONFIG['alpha']}, beta={CONFIG['beta']}")
     else:
-        raise ValueError(f"Unknown loss function: {CONFIG['loss_function']}. Choose from: 'vanilla_bce', 'weighted_bce', 'focal'")
+        raise ValueError(f"Unknown loss function: {CONFIG['loss_function']}. Choose from: 'vanilla_bce', 'weighted_bce', 'focal', 'centernet'")
     
 
     
@@ -299,7 +373,7 @@ if __name__ == "__main__":
 
     print(f'TOTAL EXPECTED PATCHES TRAINED: {batch_size*len(train_dataset)*epochs}')
     
-    total_steps = epochs * math.ceil(len(train_dataset) /batches_per_step)
+    total_steps = epochs * math.ceil(len(train_dataset) / batch_size / batches_per_step)
     warmup_steps = int(CONFIG['warmup_ratio'] * total_steps)
     print(f'WARMUP STEPS: {warmup_steps}')
     

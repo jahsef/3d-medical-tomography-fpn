@@ -72,7 +72,7 @@ class Trainer:
         self.model.to(self.device)
         
         # Initialize GradScaler for AMP
-        self.scaler = torch.amp.GradScaler("cuda")
+        self.scaler = torch.amp.GradScaler("cuda", enabled=True)
         
         # Per-step tracking for graphing
         self.step_losses = []
@@ -83,8 +83,8 @@ class Trainer:
         """Compute loss for a single batch"""
         patches = patches.to(self.device)
         labels = labels.to(self.device)
-        
-        with torch.amp.autocast("cuda"):
+
+        with torch.amp.autocast("cuda", dtype=torch.float16):
             outputs = self.model(patches)
             
         conf_loss = self.conf_loss_fn(outputs, labels)
@@ -111,6 +111,9 @@ class Trainer:
             conf_loss, outputs = self._compute_batch_loss(patches, labels)
             self.scaler.scale(conf_loss).backward()
             
+            # if batch_idx % 1 == 0:
+            #     stem_grad_norm = self.model.stem.weight.grad.norm().item() if self.model.stem.weight.grad is not None else 0
+            #     print(f"Stem grad norm: {stem_grad_norm:.4f}")
             # Update metrics with batch results
             self.train_metrics.update_batch(
                 outputs=outputs,
@@ -121,7 +124,7 @@ class Trainer:
             
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=6.7)
-            
+
             # Step optimizer after accumulating gradients (or at end of epoch)
             if (batch_idx + 1) % self.batches_per_step == 0 or (batch_idx + 1) == total_batches:
                 self.scaler.step(self.optimizer)

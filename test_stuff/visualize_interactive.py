@@ -11,11 +11,12 @@ import sys
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-from model_defs._OLD_FPN import MotorIdentifier
+from model_defs.cascade_fpn import MotorIdentifier
 
+    
 # Configuration (same as visualize_inference.py)
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn/focal/test/weights\epoch25.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/old_fpn_mse/weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
@@ -145,24 +146,38 @@ class InteractiveTomoViewer:
         im1 = self.ax_heatmap.imshow(slice_heatmap, cmap='viridis', vmin=0, vmax=1)
 
         # Add GT motor circles (if within ±1 depth slice)
+        has_exact = False
+        has_nearby = False
         for i, motor_ds in enumerate(self.gt_motors_ds):
             if abs(motor_ds[0] - depth_idx) <= 1:
+                is_exact = motor_ds[0] == depth_idx
                 circle = plt.Circle(
-                    (motor_ds[2], motor_ds[1]),  # (x, y) in image coords
+                    (motor_ds[2], motor_ds[1]),  # (w, h) in image coords
                     radius=2,
-                    color='orange' if motor_ds[0] == depth_idx else 'yellow',
+                    color='orange' if is_exact else 'yellow',
                     fill=False,
-                    linewidth=2,
-                    label=f'GT Motor {i}' if motor_ds[0] == depth_idx else None
+                    linewidth=2
                 )
                 self.ax_heatmap.add_patch(circle)
+                if is_exact:
+                    has_exact = True
+                else:
+                    has_nearby = True
 
         # Find and mark prediction peak in this slice
-        pred_y, pred_x = np.unravel_index(np.argmax(slice_heatmap), slice_heatmap.shape)
-        self.ax_heatmap.plot(pred_x, pred_y, 'r+', markersize=10, markeredgewidth=2, label='Slice Max')
+        pred_h, pred_w = np.unravel_index(np.argmax(slice_heatmap), slice_heatmap.shape)
+        self.ax_heatmap.plot(pred_w, pred_h, 'r+', markersize=10, markeredgewidth=2, label='Slice Max')
+
+        # Build legend with dummy patches
+        from matplotlib.patches import Patch
+        legend_elements = [plt.Line2D([0], [0], marker='+', color='r', linestyle='None', markersize=8, markeredgewidth=2, label='Slice Max')]
+        if has_exact:
+            legend_elements.append(Patch(facecolor='none', edgecolor='orange', linewidth=2, label='GT Motor (exact depth)'))
+        if has_nearby:
+            legend_elements.append(Patch(facecolor='none', edgecolor='yellow', linewidth=2, label='GT Motor (±1 depth)'))
 
         self.ax_heatmap.set_title(f'Heatmap (DS depth {depth_idx})\nMax: {slice_heatmap.max():.4f} | Mean: {slice_heatmap.mean():.4f}')
-        self.ax_heatmap.legend(loc='upper right', fontsize=8)
+        self.ax_heatmap.legend(handles=legend_elements, loc='upper right', fontsize=8)
 
         # --- Original slice plot ---
         original_slice = self.raw_tomo[real_depth]
@@ -186,14 +201,14 @@ class InteractiveTomoViewer:
         info_text = f'Tomogram: {self.tomo_id} | Total Motors: {len(self.gt_motors)} | '
         info_text += f'Depth: {depth_idx} (DS) = {real_depth} (real) | '
         info_text += f'Use Left/Right arrows or slider to navigate'
-        self.ax_info.text(0.5, 0.5, info_text, ha='center', va='center', fontsize=10,
+        self.ax_info.text(0.5, 0.7, info_text, ha='center', va='center', fontsize=10,
                          transform=self.ax_info.transAxes)
 
-        # Motor coordinates
+        # Motor coordinates - left aligned, larger font
         if self.gt_motors_ds:
-            motor_str = ' | '.join([f'M{i}:({m[2]},{m[1]},{m[0]})' for i, m in enumerate(self.gt_motors_ds)])
-            self.ax_info.text(0.5, 0.0, f'GT Motors (x,y,z DS): {motor_str}', ha='center', va='center',
-                             fontsize=8, transform=self.ax_info.transAxes)
+            motor_str = '  '.join([f'M{i}:(d={m[0]}, h={m[1]}, w={m[2]})' for i, m in enumerate(self.gt_motors_ds)])
+            self.ax_info.text(0.0, 0.2, f'GT Motors (DS): {motor_str}', ha='left', va='center',
+                             fontsize=10, transform=self.ax_info.transAxes)
 
         self.fig.canvas.draw_idle()
 

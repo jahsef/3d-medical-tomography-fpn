@@ -18,7 +18,7 @@ import time
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-from model_defs._OLD_FPN import MotorIdentifier
+from model_defs.parallel_fpn import MotorIdentifier
 
 import logging
 
@@ -29,12 +29,12 @@ logging.basicConfig(level=logging.DEBUG,
 
 
 # Configuration Parameters
-MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn\new_focal\focal_ablation\weights\best.pt'
+MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\old_fpn_mse\weights\best.pt'
 MASTER_TOMO_PATH = Path.cwd() / 'data/original_data/train'
 # ORIGINAL_DATA_PATH = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 GROUND_TRUTH_CSV = r'.\data\original_data\train_labels.csv'
 OUTPUT_DIR = Path('inference_results')
-OUTPUT_CSV_NAME = 'vanilla_bce_focal_ablation_best.csv'
+OUTPUT_CSV_NAME = 'poo.csv'
 
 #60,30,10,2,1
 #60:1

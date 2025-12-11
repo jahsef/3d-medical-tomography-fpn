@@ -11,11 +11,11 @@ import sys
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 #added model_defs to path
-from model_defs._OLD_FPN import MotorIdentifier
+from model_defs.parallel_fpn import MotorIdentifier
 
 # Configuration
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn/focal/test/weights\epoch25.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\old_fpn_mse/weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'

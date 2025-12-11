@@ -101,7 +101,7 @@ class MotorIdentifier(nn.Module):
         assert not torch.isnan(x).any(), 'head nan'
         return x
 
-
+    
     @torch.inference_mode()
     def inference(self, tomo_tensor, batch_size, patch_size, overlap, device, tqdm_progress:bool, sigma_scale = 1/8, mode = 'gaussian'):
         # sigmoid_model = MotorIdentifierWithSigmoid(self)
