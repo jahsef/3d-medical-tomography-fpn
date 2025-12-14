@@ -11,12 +11,12 @@ import sys
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-from model_defs.cascade_fpn import MotorIdentifier
+from model_defs.motor_detector import MotorDetector
 
     
 # Configuration (same as visualize_inference.py)
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/old_fpn_mse/weights\best.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/simple_unet_cornernet/weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
@@ -233,10 +233,10 @@ class InteractiveTomoViewer:
 def run_interactive_visualization():
     """Main function to run interactive tomogram visualization."""
     # Load model
-    model = MotorIdentifier(norm_type=norm_type).to(device)
-    model.load_state_dict(torch.load(model_path))
+    model,_ = MotorDetector.load_checkpoint(model_path)
+    model = model.to(device)
     model.eval()
-
+    
     print(f"Loaded model from {model_path}")
     print(f"Processing {len(train_id_list)} tomograms")
     print("Close the window to move to next tomogram\n")

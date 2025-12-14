@@ -10,23 +10,21 @@ import sys
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-#added model_defs to path
-from model_defs.parallel_fpn import MotorIdentifier
+
+from model_defs.motor_detector import MotorDetector
 
 # Configuration
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\old_fpn_mse/weights\best.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/pc_fpn_cornernet/weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
 
 batch_size = 6
 patch_size = (160,288,288)
-overlap = 0.5#when overfitted looks like overlap matters a lot more lol
+overlap = 0.5  # when overfitted looks like overlap matters a lot more lol
 sigma_scale = 1/8
 downsampling_factor = 16
-
-norm_type = "gn"
 # Load dataset split
 tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
 train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
@@ -203,9 +201,9 @@ def visualize_tomogram_results(tomo_id, heatmap, ground_truth_coords, original_d
 def run_automated_visualization():
     """Main function to run automated tomogram visualization."""
     # Load model
-    model = MotorIdentifier(norm_type= norm_type).to(device)
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
+    detector, _ = MotorDetector.load_checkpoint(model_path)
+    detector = detector.to(device)
+    detector.eval()
     
     # Get valid tomograms
     valid_motors = get_single_motor_tomograms()
@@ -236,7 +234,7 @@ def run_automated_visualization():
         
         # Run inference
         print("Running inference...")
-        results = model.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale)
+        results = detector.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale)
         heatmap = results.view(results.shape[2:]).cpu().numpy()
         
         print(f"Heatmap shape: {heatmap.shape}")

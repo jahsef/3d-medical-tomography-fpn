@@ -15,8 +15,8 @@ from monai.transforms import Compose
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-# from model_defs.motoridentifier import MotorIdentifier
-from model_defs.parallel_fpn import MotorIdentifier
+from model_defs.motoridentifier import MotorIdentifier
+# from ._NOSKIPCASCADE import MotorIdentifier
 
 tomo = 'tomo_9c0253'
 patch_dir = Path.cwd() / 'data/processed/patch_pt_data' / tomo
@@ -36,7 +36,7 @@ tomo = train_id_list[7]
 device = torch.device('cuda')
 model = MotorIdentifier().to(device)
 # print("HERE")
-model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn/cornernet/full_train/weights/best.pt'))
+model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/new_fpn/weights/best.pt'))
 model.eval()
 # print("HERE")
 DOWNSAMPLING_FACTOR = 16

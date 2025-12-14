@@ -64,40 +64,37 @@ class ParallelFPN(nn.Module):
 
         self.interp_r_2 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(1), dcf(1), norm_type="gn", drop_path_p=drop_path_p),
-            nnblock.get_norm_layer("gn", dcf(1)),
-            nnblock.SEBlock3d(dcf(1), reduction=4),
             nnblock.PreActRefinementBlock3d(dcf(1), norm_type="gn", drop_path_p=drop_path_p),
             nnblock.get_norm_layer("gn", dcf(1)),
-            nn.SiLU(inplace=True),
+            nnblock.SEBlock3d(dcf(1)),#SEBlocks should have norm'd inputs
+            nnblock.get_norm_layer("gn", dcf(1)),
+            
         )
+        
         self.interp_r_4 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(2), dcf(2), norm_type="gn", drop_path_p=drop_path_p),
-            nnblock.get_norm_layer("gn", dcf(2)),
-            nnblock.SEBlock3d(dcf(2), reduction=4),
             nnblock.PreActRefinementBlock3d(dcf(2), norm_type="gn", drop_path_p=drop_path_p),
             nnblock.get_norm_layer("gn", dcf(2)),
-            nn.SiLU(inplace=True),
+            nnblock.SEBlock3d(dcf(2)),#SEBlocks should have norm'd inputs
+            nnblock.get_norm_layer("gn", dcf(2)),
         )
         self.interp_r_8 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(3), dcf(3), norm_type="gn", drop_path_p=drop_path_p),
             nnblock.get_norm_layer("gn", dcf(3)),
-            nnblock.SEBlock3d(dcf(3), reduction=4),
+            nnblock.SEBlock3d(dcf(3)),#SEBlocks should have norm'd inputs
             nnblock.get_norm_layer("gn", dcf(3)),
-            nn.SiLU(inplace=True),
         )
         self.interp_r_16 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(4), dcf(4), norm_type="gn", drop_path_p=drop_path_p),
             nnblock.get_norm_layer("gn", dcf(4)),
-            nnblock.SEBlock3d(dcf(4), reduction=4),
+            nnblock.SEBlock3d(dcf(4)),#SEBlocks should have norm'd inputs
             nnblock.get_norm_layer("gn", dcf(4)),
-            nn.SiLU(inplace=True),
         )
         self.interp_r_32 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(5), dcf(5), norm_type="gn", drop_path_p=drop_path_p),
             nnblock.get_norm_layer("gn", dcf(5)),
-            nnblock.SEBlock3d(dcf(5), reduction=4),
+            nnblock.SEBlock3d(dcf(5)),#SEBlocks should have norm'd inputs
             nnblock.get_norm_layer("gn", dcf(5)),
-            nn.SiLU(inplace=True),
         )
 
         self.backbone = nn.ModuleList([self.enc_2, self.enc_4, self.enc_8, self.enc_16, self.enc_32])
@@ -115,15 +112,18 @@ class ParallelFPN(nn.Module):
         print(f'total concat features: {total_concat_channels}')
 
         self.head = nn.Sequential(
-            nn.Dropout3d(p=self.dropout_p),
-            nn.Conv3d(total_concat_channels, power_2_rounding(total_concat_channels/2), kernel_size=1),
+            nn.Dropout3d(p=self.dropout_p),#INPUT IS PER LEVEL NORMALIZED, GLOBAL THEORETICALLY HAS A HARDER OPTIMIZATION PATH (larger range)
+            nn.SiLU(inplace=True),
+            nnblock.SEBlock3d(channels = total_concat_channels),#technically SE block breaks the norm and act but this seems to be essentially identity
+            # nnblock.PreActDownchannel3d(total_concat_channels,power_2_rounding(total_concat_channels/2),norm_type="gn", drop_path_p=drop_path_p),
+            nn.Conv3d(total_concat_channels,power_2_rounding(total_concat_channels/2), kernel_size = 1,bias = False),
             nnblock.PreActResBlock3d(power_2_rounding(total_concat_channels/2), power_2_rounding(total_concat_channels/4), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
             nnblock.PreActResBlock3d(power_2_rounding(total_concat_channels/4), power_2_rounding(total_concat_channels/8), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
             nnblock.get_norm_layer("gn", power_2_rounding(total_concat_channels/8)),
             nn.SiLU(inplace=True),
-            nn.Conv3d(power_2_rounding(total_concat_channels/8), 1, kernel_size=1)
+            nn.Conv3d(power_2_rounding(total_concat_channels/8), 1, kernel_size=1, bias = True) #MAKE SURE FINAL OUTPUT ISNT A SKIP CONNECTION!!!!!!!!!
         )
-
+    
     def forward(self, x):
         assert not torch.isnan(x).any(), 'x nan yo'
         

@@ -10,8 +10,8 @@ if __name__ == '__main__':
     import nnblock
     from nnblock import check_tensor
 else:
-    from . import nnblock
-    from .nnblock import check_tensor
+    from ....model_defs import nnblock
+    from ....model_defs.nnblock import check_tensor
     
 from itertools import product
 from torchio import GridSampler, GridAggregator

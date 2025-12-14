@@ -5,7 +5,11 @@ Continuous focal adaptation (obvious but undocumented)
 β scheduling curriculum (+3-5pp improvement)
 
 
-
+SE BLOCKS ARE STILL HELPFUL EVEN THOUGH THEIR CHANNEL WEIGHTINGS ARE NEAR IDENTITY
+THEORY:UNCLEAR
+near identity weighting (sigmoid(4.0) = 0.98) for all channels, no deviation depending on sample
+epochs to top10 0.8 is reduced by 40% (14 to 10)
+epochs to top10 0.96 reduced by 75%   (60 to 15)
 
 Architecture insights:
 

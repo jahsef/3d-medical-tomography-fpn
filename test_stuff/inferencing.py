@@ -18,7 +18,7 @@ import time
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-from model_defs.parallel_fpn import MotorIdentifier
+from model_defs.motor_detector import MotorDetector
 
 import logging
 
@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.DEBUG,
 
 
 # Configuration Parameters
-MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\old_fpn_mse\weights\best.pt'
+MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\parallel_fpn_cornernet9\weights\best.pt'
 MASTER_TOMO_PATH = Path.cwd() / 'data/original_data/train'
 # ORIGINAL_DATA_PATH = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 GROUND_TRUTH_CSV = r'.\data\original_data\train_labels.csv'
@@ -44,10 +44,10 @@ OUTPUT_CSV_NAME = 'poo.csv'
 # Dataset Split Configuration
 tomo_id_list = [dir.name for dir in MASTER_TOMO_PATH.iterdir() if dir.is_dir()]
 train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
-val_id_list = train_id_list[:len(train_id_list):5]
+val_id_list = val_id_list[:len(val_id_list):10]
 # val_id_list = train_id_list[:len(train_id_list):30]  
 # val_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :4]
-# val_id_list = ['tomo_d7475d']
+# val_id_list = ['tomo_d7475d'] 
 
 # Inference Parameters
 DOWNSAMPLING_FACTOR = 16
@@ -217,8 +217,8 @@ def tomogram_thread(tomo_queue, is_tomo_ready, ground_truth):
         tomo_queue.put((tomo, ground_truth[tomo_id]))
         is_tomo_ready.set()
     tomo_queue.put(None)  # Sentinel
-
-def inference_thread(tomo_queue, hungarian_queue, is_tomo_ready, model, device):
+    
+def inference_thread(tomo_queue, hungarian_queue, is_tomo_ready, detector, device):
     """Run inference and pruning."""
     while True:
         logging.info('WAITING FOR TOMOGRAM')
@@ -228,15 +228,15 @@ def inference_thread(tomo_queue, hungarian_queue, is_tomo_ready, model, device):
         if item is None:
             hungarian_queue.put(None)
             break
-        
+
         tomo, gt_motors = item
-        
+
         # Run inference
         tomo_tensor = tomo.reshape(1, 1, *tomo.shape).to(device)
         logging.info('START INFERENCING')
         with torch.no_grad():
-            results = model.inference(tomo_tensor, batch_size=BATCH_SIZE, patch_size=PATCH_SIZE, 
-                                    overlap=OVERLAP, device=device, tqdm_progress=True) 
+            results = detector.inference(tomo_tensor, batch_size=BATCH_SIZE, patch_size=PATCH_SIZE,
+                                         overlap=OVERLAP, device=device, tqdm_progress=True)
         logging.info('END INFERENCING')
         heatmap = results.view(results.shape[2:]).cpu().numpy()
         
@@ -299,9 +299,9 @@ def main():
 
     # Setup
     device = torch.device('cuda')
-    model = MotorIdentifier(norm_type="gn").to(device)
-    model.load_state_dict(torch.load(MODEL_PATH))
-    model.eval()
+    detector, _ = MotorDetector.load_checkpoint(MODEL_PATH)
+    detector = detector.to(device)
+    detector.eval()
 
     print(f"Processing {len(val_id_list)} validation tomograms")
     
@@ -318,7 +318,7 @@ def main():
     # Start threads
     threads = [
         threading.Thread(target=tomogram_thread, args=(tomo_queue, is_tomo_ready, ground_truth)),
-        threading.Thread(target=inference_thread, args=(tomo_queue, hungarian_queue, is_tomo_ready, model, device)),
+        threading.Thread(target=inference_thread, args=(tomo_queue, hungarian_queue, is_tomo_ready, detector, device)),
         threading.Thread(target=hungarian_thread, args=(hungarian_queue, final_metrics, metrics_lock))
     ]
     
