@@ -20,21 +20,25 @@ current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 from model_defs.motor_detector import MotorDetector
 
+# from models.fpn_comparison.parallel_fpn_cornernet9.model_defs.motor_detector import MotorDetector
+
 import logging
 
-logging.basicConfig(level=logging.DEBUG,
+logging.basicConfig(level=logging.WARNING,
                     format='%(asctime)s - %(message)s')
 
 
 
 
 # Configuration Parameters
-MODEL_PATH = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\parallel_fpn_cornernet9\weights\best.pt'
+MODEL_DIR = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\pc_fpn_cornernet4')
+WEIGHT_FILE = 'best.pt'  # 'best.pt' or 'epoch0.pt'
+MODEL_PATH = MODEL_DIR / 'weights' / WEIGHT_FILE
+print(f"loading from: {MODEL_PATH}")
 MASTER_TOMO_PATH = Path.cwd() / 'data/original_data/train'
-# ORIGINAL_DATA_PATH = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 GROUND_TRUTH_CSV = r'.\data\original_data\train_labels.csv'
-OUTPUT_DIR = Path('inference_results')
-OUTPUT_CSV_NAME = 'poo.csv'
+OUTPUT_DIR = MODEL_DIR / 'inference_results'
+OUTPUT_CSV_NAME = 'results.csv'
 
 #60,30,10,2,1
 #60:1
@@ -44,7 +48,7 @@ OUTPUT_CSV_NAME = 'poo.csv'
 # Dataset Split Configuration
 tomo_id_list = [dir.name for dir in MASTER_TOMO_PATH.iterdir() if dir.is_dir()]
 train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
-val_id_list = val_id_list[:len(val_id_list):10]
+val_id_list = train_id_list[:len(train_id_list):5]
 # val_id_list = train_id_list[:len(train_id_list):30]  
 # val_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :4]
 # val_id_list = ['tomo_d7475d'] 
@@ -228,7 +232,7 @@ def inference_thread(tomo_queue, hungarian_queue, is_tomo_ready, detector, devic
         if item is None:
             hungarian_queue.put(None)
             break
-
+        
         tomo, gt_motors = item
 
         # Run inference
@@ -236,7 +240,7 @@ def inference_thread(tomo_queue, hungarian_queue, is_tomo_ready, detector, devic
         logging.info('START INFERENCING')
         with torch.no_grad():
             results = detector.inference(tomo_tensor, batch_size=BATCH_SIZE, patch_size=PATCH_SIZE,
-                                         overlap=OVERLAP, device=device, tqdm_progress=True)
+                                         overlap=OVERLAP, device=device, tqdm_progress=False)
         logging.info('END INFERENCING')
         heatmap = results.view(results.shape[2:]).cpu().numpy()
         
@@ -269,7 +273,7 @@ def inference_thread(tomo_queue, hungarian_queue, is_tomo_ready, detector, devic
             logging.info('CLEARING FLAG, NO TOMOS READY')
             is_tomo_ready.clear()
 
-def hungarian_thread(hungarian_queue, final_metrics, metrics_lock):
+def hungarian_thread(hungarian_queue, final_metrics, metrics_lock, pbar):
     """Process Hungarian matching results."""
     while True:
         item = hungarian_queue.get()
@@ -290,6 +294,8 @@ def hungarian_thread(hungarian_queue, final_metrics, metrics_lock):
                 final_metrics[key]['tp'] += tp
                 final_metrics[key]['fp'] += fp
                 final_metrics[key]['fn'] += fn
+
+        pbar.update(1)
 
 def main():
     global _image_loader_pool
@@ -314,19 +320,20 @@ def main():
     is_tomo_ready = threading.Event()
     final_metrics = {}
     metrics_lock = threading.Lock()
-    
-    # Start threads
-    threads = [
-        threading.Thread(target=tomogram_thread, args=(tomo_queue, is_tomo_ready, ground_truth)),
-        threading.Thread(target=inference_thread, args=(tomo_queue, hungarian_queue, is_tomo_ready, detector, device)),
-        threading.Thread(target=hungarian_thread, args=(hungarian_queue, final_metrics, metrics_lock))
-    ]
-    
-    for t in threads:
-        t.start()
-    
-    for t in threads:
-        t.join()
+
+    # Start threads with tqdm progress bar
+    with tqdm(total=len(val_id_list), desc="Processing tomograms") as pbar:
+        threads = [
+            threading.Thread(target=tomogram_thread, args=(tomo_queue, is_tomo_ready, ground_truth)),
+            threading.Thread(target=inference_thread, args=(tomo_queue, hungarian_queue, is_tomo_ready, detector, device)),
+            threading.Thread(target=hungarian_thread, args=(hungarian_queue, final_metrics, metrics_lock, pbar))
+        ]
+
+        for t in threads:
+            t.start()
+
+        for t in threads:
+            t.join()
     
     # Calculate final metrics and save
     results_data = []
@@ -345,20 +352,36 @@ def main():
                 'threshold': round(conf_thresh, 3),
                 'precision': round(precision, 3),
                 'recall': round(recall, 3),
-                'f_beta': round(fbeta, 3),
+                f'f_{BETA}': round(fbeta, 3),
                 'tp': tp, 'fp': fp, 'fn': fn
             })
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(exist_ok=False)
     results_df = pd.DataFrame(results_data)
     results_df.to_csv(OUTPUT_DIR / OUTPUT_CSV_NAME, index=False)
 
-    # Print best result per radius
-    print(f"\nBest F-{BETA} scores by prune radius:")
+    # Build best results summary
+    f_col = f'f_{BETA}'
+    summary_lines = [f"Model: {MODEL_DIR.name}", f"Weights: {WEIGHT_FILE}", ""]
+    summary_lines.append(f"Best F{BETA} scores by prune radius:")
+
     for radius in PRUNING_RADII:
         radius_df = results_df[results_df['prune_radius'] == radius]
-        best = radius_df.loc[radius_df['f_beta'].idxmax()]
-        print(f"  r={radius}: F{BETA}={best['f_beta']:.4f} @ thresh={best['threshold']:.2f} (P={best['precision']:.3f}, R={best['recall']:.3f})")
+        best = radius_df.loc[radius_df[f_col].idxmax()]
+        line = f"  r={radius}: F{BETA}={best[f_col]:.4f} @ thresh={best['threshold']:.2f} (P={best['precision']:.3f}, R={best['recall']:.3f})"
+        summary_lines.append(line)
+
+    # Find overall best
+    overall_best = results_df.loc[results_df[f_col].idxmax()]
+    summary_lines.append("")
+    summary_lines.append(f"Overall best: F{BETA}={overall_best[f_col]:.4f} @ r={int(overall_best['prune_radius'])}, thresh={overall_best['threshold']:.2f}")
+
+    # Print and save summary
+    summary_text = "\n".join(summary_lines)
+    print(f"\n{summary_text}")
+
+    with open(OUTPUT_DIR / 'best_results.txt', 'w') as f:
+        f.write(summary_text)
 
     # Cleanup
     _image_loader_pool.shutdown(wait=False)

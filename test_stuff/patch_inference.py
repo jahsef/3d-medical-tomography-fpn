@@ -15,7 +15,9 @@ from monai.transforms import Compose
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
-from model_defs.motoridentifier import MotorIdentifier
+
+from models.fpn_comparison.parallel_fpn_cornernet20.model_defs.motor_detector import MotorDetector
+
 # from ._NOSKIPCASCADE import MotorIdentifier
 
 tomo = 'tomo_9c0253'
@@ -31,12 +33,11 @@ print(f'tomo list head: ')
 print(train_id_list[:10])
 tomo = train_id_list[7]
 
-
+checkpoint = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/parallel_fpn_cornernet20/weights/best.pt'
 # print("HERE")
-device = torch.device('cuda')
-model = MotorIdentifier().to(device)
-# print("HERE")
-model.load_state_dict(torch.load(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/new_fpn/weights/best.pt'))
+device = torch.device('cpu')
+model, _ = MotorDetector.load_checkpoint(checkpoint)
+model = model.to(device)
 model.eval()
 # print("HERE")
 DOWNSAMPLING_FACTOR = 16
@@ -82,6 +83,7 @@ for patch_file in patch_dir.glob('*.pt'):
         patch = patch.unsqueeze(0).unsqueeze(0) 
     if patch.dim() == 4:
         patch = patch.unsqueeze(0)
+    patch = patch.float()
     print(f"Input shape: {patch.shape}")
     
     with torch.amp.autocast(device_type='cuda'):

@@ -12,10 +12,11 @@ current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 
 from model_defs.motor_detector import MotorDetector
+# from models.fpn_comparison.parallel_fpn_cornernet9.model_defs.motor_detector import MotorDetector
 
 # Configuration
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/pc_fpn_cornernet/weights\best.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/pc_fpn_cornernet4/weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
@@ -36,7 +37,7 @@ train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, ran
 
 #after successful curriculum we can move to skip connection ae better enc:dec ratio 4:1 and gaussian weighting for labels (we can keep edge motors)
 
-train_id_list = train_id_list[: :5]
+train_id_list = train_id_list[::5]
 # train_id_list = val_id_list
 # train_id_list = ['tomo_d7475d']
 # train_id_list = ['tomo_00e047']
@@ -234,7 +235,7 @@ def run_automated_visualization():
         
         # Run inference
         print("Running inference...")
-        results = detector.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale)
+        results = detector.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale, dtype = torch.float16)
         heatmap = results.view(results.shape[2:]).cpu().numpy()
         
         print(f"Heatmap shape: {heatmap.shape}")

@@ -20,13 +20,36 @@ This is a Kaggle competition project for bacterial flagellar motor detection in 
 ### Data Organization
 ```
 data/
-├── original_data/          # Raw Kaggle competition data
-├── processed/patch_pt_data/ # Preprocessed patch data in PyTorch format
-models/                     # Model experiments organized by architecture type
-├── fpn/                   # Feature Pyramid Network experiments  
-├── simple_resnet/         # ResNet-based experiments
-├── resnet/                # Other ResNet variants
+├── original_data/
+│   ├── train/                    # Raw tomogram images (tomo_N/0.jpg, 1.jpg, ...)
+│   ├── train_labels.csv          # Original labels (deprecated)
+│   └── RELABELED_DATA.csv        # New relabeled data with folds
+├── processed/
+│   ├── patch_pt_data/            # Old preprocessed patches
+│   └── relabeled_patch_pt_data/  # New patches from relabeled data
+models/                           # Model experiments organized by architecture type
+├── fpn/                          # Feature Pyramid Network experiments
+├── simple_resnet/                # ResNet-based experiments
+├── resnet/                       # Other ResNet variants
 ```
+
+### Data Conversion Pipeline
+`test_stuff/convert_pt.py` - Converts raw tomograms to training patches
+
+**Architecture**: 3 producer processes load tomograms in parallel, main process consumes and saves
+
+**Label Format (RELABELED_DATA.csv)**:
+- Columns: `tomo_id, z, y, x, z_shape, y_shape, x_shape, voxel_spacing, coordinates, fold`
+- `fold` column provides pre-set cross-validation splits (use instead of random splitting)
+- `fold=-1` indicates excluded samples
+
+**Patch Sampling Strategy** (per tomogram):
+- **Single motor**: N patches per motor, centered around motor location
+- **Multi motor**: up to `total_motors * Y` patches containing 2+ motors
+- **Hard negative**: M patches per motor, close but not containing motor
+- **Random negative**: X patches per motor, anywhere not in other categories
+
+Each patch dict includes `patch_type`: 'single', 'multi', 'hard_negative', 'negative'
 
 ## Common Development Commands
 
@@ -66,3 +89,48 @@ The MotorIdentifier uses an FPN with encoder-decoder structure and multi-scale f
 - Training uses gradient accumulation (`batches_per_step`) for large effective batch sizes
 - Cosine annealing with warmup for learning rate scheduling
 - Differential learning rates for backbone vs head components
+
+
+Core Principles
+
+FAIL FAST: Explicit errors are better than silent failures
+Self-documenting code: Clear names and structure over excessive comments
+Readability: Reduce nesting, keep functions focused
+
+Function Design
+
+Type hints required at minimum in function signatures
+NO default arguments - force explicit parameter passing
+Size limit: Functions >100 lines should be split into smaller pieces
+Private helpers: Prefix with underscore _helper_function() if not meant for public API
+At least one assertion in major functions to validate assumptions
+
+Data Access
+
+NEVER use dict.get() except for kwargs or special edge cases
+Access dictionaries directly: config['learning_rate'] not config.get('learning_rate')
+Document any exceptions to this rule with inline comments explaining why
+
+Naming Conventions
+
+Descriptive over abbreviated: batch_size not bs, num_epochs not ne
+Exception: Standard ML conventions (x, y, loss, optimizer) are acceptable
+Variables should clearly communicate intent
+
+Comments
+
+Minimize noise: Don't comment self-explanatory code
+Comment complexity: Explain non-obvious logic or algorithms
+Document unconventional choices: If code deviates from standard patterns, explain why
+Let the code speak for itself when possible
+
+Code Organization
+
+No globals: All state passed explicitly as function parameters
+Reduce nesting: Early returns, guard clauses, helper functions
+
+Error Handling
+
+Explicit failures: Let errors propagate rather than catch and suppress
+Meaningful assertions: assert x.shape[0] == batch_size, f"Expected {batch_size}, got {x.shape[0]}"
+Validate assumptions early and loudly

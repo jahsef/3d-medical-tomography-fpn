@@ -1,0 +1,327 @@
+import monai.inferers
+import torch.nn as nn
+# from torchvision.models.video.resnet import r3d_18
+# from torchvision.models.video.resnet import R3D_18_Weights
+import torch
+from torchvision.ops import DropBlock3d
+
+
+from .. import nnblock
+from ..nnblock import check_tensor
+    
+from itertools import product
+from torchio import GridSampler, GridAggregator
+import torchio as tio
+from torch.utils.data.dataloader import DataLoader
+import monai
+import gc
+import time
+import torch.nn.functional as F
+import math
+
+from .utils import dc_growth_fn as _dc_growth_fn, power_2_rounding, growth_fn as _growth_fn, raw_growth_fn as _raw_growth_fn
+
+
+class CascadeFPN(nn.Module):
+
+    def __init__(self, base_features, growth_rate, downchanneling_factor, dropout_p=0, drop_path_p=0):
+        super().__init__()
+        self.dropout_p = dropout_p
+        self.drop_path_p = drop_path_p
+        F_I = base_features
+        G_R = growth_rate
+        DC = downchanneling_factor
+
+        # Local wrappers that capture F_I, G_R, DC
+        def gf(level):
+            return _growth_fn(level, F_I, G_R)
+
+        def dcf(level):
+            return _dc_growth_fn(level, F_I, G_R, DC)
+
+        def rgf(level):
+            return _raw_growth_fn(level, F_I, G_R)
+
+        def cascade_in(level):
+            if level == 1:
+                return dcf(1)
+            else:
+                return power_2_rounding(dcf(level-1)/G_R) + dcf(level)
+
+        def cascade_out(level):
+            return power_2_rounding(dcf(level)/G_R)
+
+        def skip_out(level):
+            return power_2_rounding(dcf(level)/DC)
+
+        def hgf(level):
+            # head input is cascade_out(5) + all DOWNCHANNELED skip connections
+            head_input = cascade_out(5) + sum([skip_out(i) for i in range(1, 6)])
+            return head_input if level == 5 else power_2_rounding(head_input/(DC**(5-level)))
+        
+        
+        self.stem = nn.Conv3d(1, F_I, kernel_size=5, stride=1, padding=2)
+
+        self.enc_2 = nn.Sequential(
+            nnblock.PreActResBlock3d(F_I, gf(1), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(1), gf(1), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p)
+        )
+        self.enc_4 = nn.Sequential(
+            nnblock.PreActResBlock3d(gf(1), gf(2), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+            nnblock.PreActResBlock3d(gf(2), gf(2), kernel_size=3, norm_type="gn", drop_path_p=drop_path_p)
+        )
+        self.enc_8 = nn.Sequential(
+            nnblock.PreActResBlock3d(gf(2), gf(3), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+        )
+        self.enc_16 = nn.Sequential(
+            nnblock.PreActResBlock3d(gf(3), gf(4), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+        )
+        self.enc_32 = nn.Sequential(
+            nnblock.PreActResBlock3d(gf(4), gf(5), stride=2, kernel_size=3, norm_type="gn", drop_path_p=drop_path_p),
+        )
+
+        self.interp_r_2 = nn.Sequential(
+            nnblock.PreActDownchannel3d(gf(1), dcf(1), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", dcf(1)),
+            nnblock.SEBlock3d(dcf(1), reduction=4),
+            nnblock.PreActRefinementBlock3d(dcf(1), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", dcf(1)),
+            nn.SiLU(inplace=True)
+        )
+        self.interp_r_4 = nn.Sequential(
+            nnblock.PreActDownchannel3d(gf(2), dcf(2), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", dcf(2)),
+            nnblock.SEBlock3d(dcf(2), reduction=4),
+            nnblock.PreActRefinementBlock3d(dcf(2), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", dcf(2)),
+            nn.SiLU(inplace=True)
+        )
+        self.interp_r_8 = nn.Sequential(
+            nnblock.PreActDownchannel3d(gf(3), dcf(3), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", dcf(3)),
+            nnblock.SEBlock3d(dcf(3), reduction=4),
+            nnblock.get_norm_layer("gn", dcf(3)),
+            nn.SiLU(inplace=True)
+        )
+        self.interp_r_16 = nn.Sequential(
+            nnblock.PreActDownchannel3d(gf(4), dcf(4), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", dcf(4)),
+            nnblock.SEBlock3d(dcf(4), reduction=4),
+            nnblock.get_norm_layer("gn", dcf(4)),
+            nn.SiLU(inplace=True)
+        )
+        self.interp_r_32 = nn.Sequential(
+            nnblock.PreActDownchannel3d(gf(5), dcf(5), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", dcf(5)),
+            nnblock.SEBlock3d(dcf(5), reduction=4),
+            nnblock.get_norm_layer("gn", dcf(5)),
+            nn.SiLU(inplace=True)
+        )
+
+        # Skip downchannel blocks for head skip connections
+        self.skip_downchannel_2 = nn.Sequential(
+            nn.Conv3d(dcf(1), skip_out(1), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(1)),
+        )
+        self.skip_downchannel_4 = nn.Sequential(
+            nn.Conv3d(dcf(2), skip_out(2), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(2)),
+        )
+        self.skip_downchannel_8 = nn.Sequential(
+            nn.Conv3d(dcf(3), skip_out(3), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(3)),
+        )
+        self.skip_downchannel_16 = nn.Sequential(
+            nn.Conv3d(dcf(4), skip_out(4), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(4)),
+        )
+        self.skip_downchannel_32 = nn.Sequential(
+            nn.Conv3d(dcf(5), skip_out(5), kernel_size=1, bias=False),
+            nnblock.get_norm_layer("gn", skip_out(5)),
+        )
+
+        #on our diagram this cascade processing block is the same level as the number in its name
+        #usage: takes in current level interp'd output concat with previous level output
+
+        self.cascade_2 = nn.Sequential(
+            nn.Conv3d(cascade_in(1), cascade_out(1), kernel_size=1),
+            nnblock.PreActRefinementBlock3d(cascade_out(1), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", cascade_out(1)),
+            nn.SiLU(inplace=True)
+        )
+        self.cascade_4 = nn.Sequential(
+            nn.Conv3d(cascade_in(2), cascade_out(2), kernel_size=1),
+            nnblock.PreActRefinementBlock3d(cascade_out(2), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", cascade_out(2)),
+            nn.SiLU(inplace=True)
+        )
+        self.cascade_8 = nn.Sequential(
+            nn.Conv3d(cascade_in(3), cascade_out(3), kernel_size=1),
+            nnblock.PreActRefinementBlock3d(cascade_out(3), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", cascade_out(3)),
+            nn.SiLU(inplace=True)
+        )
+        self.cascade_16 = nn.Sequential(
+            nn.Conv3d(cascade_in(4), cascade_out(4), kernel_size=1),
+            nnblock.PreActRefinementBlock3d(cascade_out(4), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", cascade_out(4)),
+            nn.SiLU(inplace=True)
+        )
+        self.cascade_32 = nn.Sequential(
+            nn.Conv3d(cascade_in(5), cascade_out(5), kernel_size=1),
+            nnblock.PreActRefinementBlock3d(cascade_out(5), drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.get_norm_layer("gn", cascade_out(5)),
+            # nn.SiLU(inplace=True) #dont activate last one since the head starts with an SE block
+        )
+        
+        # Organized module lists
+        self.backbone = nn.ModuleList([self.stem, self.enc_2, self.enc_4, self.enc_8, self.enc_16, self.enc_32])
+        self.neck = nn.ModuleList([
+            self.interp_r_2, self.interp_r_4, self.interp_r_8, self.interp_r_16, self.interp_r_32,
+            self.skip_downchannel_2, self.skip_downchannel_4, self.skip_downchannel_8, self.skip_downchannel_16, self.skip_downchannel_32,
+            self.cascade_2, self.cascade_4, self.cascade_8, self.cascade_16, self.cascade_32
+        ])
+        
+        raw_feature_progression = [rgf(i) for i in [1, 2, 3, 4, 5]]
+        print(f'raw feature progression in backbone: {F_I}, {raw_feature_progression}')
+
+        feature_progression = [gf(i) for i in [1, 2, 3, 4, 5]]
+        print(f'feature progression in backbone: {F_I}, {feature_progression}')
+
+        downchannel_progression = [dcf(i) for i in [1, 2, 3, 4, 5]]
+        print(f'after downchanneling : {downchannel_progression}')
+
+        # cascade channel progression (lean)
+        cascade_progression = [(cascade_in(i), cascade_out(i)) for i in range(1, 6)]
+        print(f'cascade progression (in->out): {cascade_progression}')
+        skip_progression = [skip_out(i) for i in range(1, 6)]
+        print(f'skip downchannel progression: {skip_progression}, sum: {sum(skip_progression)}')
+        print(f'head input: {hgf(5)}')
+        print(f'head progression: {[hgf(i) for i in [5, 4, 3, 2, 1]]}, 1')
+
+        self.head = nn.Sequential(
+            nn.Dropout3d(p=self.dropout_p),
+            nnblock.SEBlock3d(hgf(5)),
+            nn.Conv3d(hgf(5), hgf(4), kernel_size=1, bias=False),
+            nnblock.PreActResBlock3d(hgf(4), hgf(3), kernel_size=3, drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.PreActResBlock3d(hgf(3), hgf(2), kernel_size=3, drop_path_p=drop_path_p, norm_type="gn"),
+            nnblock.PreActDownchannel3d(hgf(2), 1, drop_path_p=drop_path_p, norm_type="gn"),
+        )
+
+    def forward(self, x):
+        assert not torch.isnan(x).any(), 'x nan yo'
+        
+        stem_x = self.stem(x)
+        
+        enc_2_x = self.enc_2(stem_x)
+        enc_4_x = self.enc_4(enc_2_x)
+        enc_8_x = self.enc_8(enc_4_x)
+        enc_16_x = self.enc_16(enc_8_x)
+        enc_32_x = self.enc_32(enc_16_x)
+
+        target_size = enc_16_x.shape[2:]
+        
+        interp_2_x = F.interpolate(enc_2_x, size=target_size, mode='trilinear')
+        
+        interp_2_x = self.interp_r_2(interp_2_x)
+        # interp_2_x = torch.clamp(interp_2_x, min=-1e2, max=1e2)
+
+        interp_4_x = F.interpolate(enc_4_x, size=target_size, mode='trilinear')
+        
+        interp_4_x = self.interp_r_4(interp_4_x)
+        # interp_4_x = torch.clamp(interp_4_x, min=-1e2, max=1e2)
+
+        interp_8_x = F.interpolate(enc_8_x, size=target_size, mode='trilinear')
+        
+        interp_8_x = self.interp_r_8(interp_8_x)
+        # interp_8_x = torch.clamp(interp_8_x, min=-1e2, max=1e2)
+
+        interp_16_x = F.interpolate(enc_16_x, size=target_size, mode='trilinear')
+        
+        interp_16_x = self.interp_r_16(interp_16_x) #we still interp 1/16th x still because the 1/16th 
+        # interp_16_x = torch.clamp(interp_16_x, min=-1e2, max=1e2)
+
+        interp_32_x = F.interpolate(enc_32_x, size=target_size, mode='trilinear')
+        
+        interp_32_x = self.interp_r_32(interp_32_x)
+        # interp_32_x = torch.clamp(interp_32_x, min=-1e2, max=1e2)
+        
+        check_tensor('interp_2_x', interp_2_x)
+        check_tensor('interp_4_x', interp_4_x)
+        check_tensor('interp_8_x', interp_8_x)
+        check_tensor('interp_16_x', interp_16_x)
+        check_tensor('interp_32_x', interp_32_x)
+        
+        cascade2_x = self.cascade_2(interp_2_x)
+        cascade4_x = self.cascade_4(torch.cat([cascade2_x, interp_4_x], dim=1))
+        cascade8_x = self.cascade_8(torch.cat([cascade4_x, interp_8_x], dim=1))
+        cascade16_x = self.cascade_16(torch.cat([cascade8_x, interp_16_x], dim=1))
+        cascade32_x = self.cascade_32(torch.cat([cascade16_x, interp_32_x], dim=1))
+
+        # Downchannel skip connections for head
+        skip_2 = self.skip_downchannel_2(interp_2_x)
+        skip_4 = self.skip_downchannel_4(interp_4_x)
+        skip_8 = self.skip_downchannel_8(interp_8_x)
+        skip_16 = self.skip_downchannel_16(interp_16_x)
+        skip_32 = self.skip_downchannel_32(interp_32_x)
+
+        skip_outputs = torch.cat([skip_2, skip_4, skip_8, skip_16, skip_32], dim=1)
+        final_head_input = torch.cat([cascade32_x, skip_outputs], dim=1)    
+    
+        results = self.head(final_head_input)
+        
+        check_tensor("results", results, related_tensors={
+            "interp_2_x": interp_2_x,
+            "interp_4_x": interp_4_x,
+            "interp_8_x": interp_8_x,
+            "interp_16_x": interp_16_x,
+            "interp_32_x": interp_32_x,
+            "cascade32_x": cascade32_x,
+        })
+        
+        return results
+
+    def print_params(self):
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+        # Backbone params (stem + encoders)
+        backbone_names = ['stem', 'enc_2', 'enc_4', 'enc_8', 'enc_16', 'enc_32']
+        backbone_params = [sum(p.numel() for p in module.parameters() if p.requires_grad)
+                          for module in self.backbone]
+        total_backbone = sum(backbone_params)
+
+        # Neck params (interp + skip_dc + cascade)
+        neck_names = ['interp_2', 'interp_4', 'interp_8', 'interp_16', 'interp_32',
+                      'skip_dc_2', 'skip_dc_4', 'skip_dc_8', 'skip_dc_16', 'skip_dc_32',
+                      'cascade_2', 'cascade_4', 'cascade_8', 'cascade_16', 'cascade_32']
+        neck_params = [sum(p.numel() for p in module.parameters() if p.requires_grad)
+                      for module in self.neck]
+        total_neck = sum(neck_params)
+
+        # Head params
+        head_params = sum(p.numel() for p in self.head.parameters() if p.requires_grad)
+
+        # Format backbone details
+        backbone_details = ', '.join(f'{name}: {params:,}' for name, params in zip(backbone_names, backbone_params))
+
+        # Format neck details
+        neck_details = ', '.join(f'{name}: {params:,}' for name, params in zip(neck_names, neck_params))
+
+        print(
+            f'Total trainable params: {trainable_params:,}\n'
+            f'---\n'
+            f'Backbone params: {total_backbone:,}\n'
+            f'  {backbone_details}\n'
+            f'---\n'
+            f'Neck params: {total_neck:,}\n'
+            f'  {neck_details}\n'
+            f'---\n'
+            f'Head params: {head_params:,}'
+        )
+
+
+
+
+if __name__ == '__main__':
+    model = MotorIdentifier()
+    model.print_params()

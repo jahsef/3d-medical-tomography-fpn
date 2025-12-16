@@ -45,12 +45,14 @@ class PCFPN(nn.Module):
             return _raw_growth_fn(level, F_I, G_R)
 
         def cascade_in(level):
-            if level == 1:
-                return dcf(1)
+            # assert level >= 3, 'cascade in must be >= 3'
+            if level == 3:
+                return dcf(3)
             else:
                 return power_2_rounding(dcf(level-1)/G_R) + dcf(level)
 
         def cascade_out(level):
+            # assert level >= 3, 'cascade out must be >= 3'
             return power_2_rounding(dcf(level)/G_R)
 
 
@@ -83,33 +85,33 @@ class PCFPN(nn.Module):
         self.interp_r_2 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(1), dcf(1), drop_path_p=drop_path_p, norm_type="gn"),
             nnblock.PreActRefinementBlock3d(dcf(1), drop_path_p=drop_path_p, norm_type="gn"),
-            nnblock.get_norm_layer("gn", dcf(1)),
+            # nnblock.get_norm_layer("gn", dcf(1)),
             nnblock.SEBlock3d(dcf(1), reduction=4),
             nnblock.get_norm_layer("gn", dcf(1)),
         )
         self.interp_r_4 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(2), dcf(2), drop_path_p=drop_path_p, norm_type="gn"),
             nnblock.PreActRefinementBlock3d(dcf(2), drop_path_p=drop_path_p, norm_type="gn"),
-            nnblock.get_norm_layer("gn", dcf(2)),
+            # nnblock.get_norm_layer("gn", dcf(2)),
             nnblock.SEBlock3d(dcf(2), reduction=4),
             nnblock.get_norm_layer("gn", dcf(2)),
             
         )
         self.interp_r_8 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(3), dcf(3), drop_path_p=drop_path_p, norm_type="gn"),
-            nnblock.get_norm_layer("gn", dcf(3)),
+            # nnblock.get_norm_layer("gn", dcf(3)),
             nnblock.SEBlock3d(dcf(3), reduction=4),
             nnblock.get_norm_layer("gn", dcf(3)),
         )
         self.interp_r_16 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(4), dcf(4), drop_path_p=drop_path_p, norm_type="gn"),
-            nnblock.get_norm_layer("gn", dcf(4)),
+            # nnblock.get_norm_layer("gn", dcf(4)),
             nnblock.SEBlock3d(dcf(4), reduction=4),
             nnblock.get_norm_layer("gn", dcf(4)),
         )
         self.interp_r_32 = nn.Sequential(
             nnblock.PreActDownchannel3d(gf(5), dcf(5), drop_path_p=drop_path_p, norm_type="gn"),
-            nnblock.get_norm_layer("gn", dcf(5)),
+            # nnblock.get_norm_layer("gn", dcf(5)),
             nnblock.SEBlock3d(dcf(5), reduction=4),
             nnblock.get_norm_layer("gn", dcf(5)),
         )
@@ -143,7 +145,7 @@ class PCFPN(nn.Module):
             nnblock.PreActRefinementBlock3d(cascade_out(5), drop_path_p=drop_path_p, norm_type="gn"),
             nnblock.get_norm_layer(norm_type="gn", num_channels=cascade_out(5)),
         )
-                
+
         raw_feature_progression = [rgf(i) for i in [1, 2, 3, 4, 5]]
         print(f'raw feature progression in backbone: {F_I}, {raw_feature_progression}')
 
@@ -154,24 +156,25 @@ class PCFPN(nn.Module):
         print(f'after downchanneling : {downchannel_progression}')
 
         # cascade channel progression (lean)
-        cascade_progression = [(cascade_in(i), cascade_out(i)) for i in range(1, 6)]
+        cascade_progression = [(cascade_in(i), cascade_out(i)) for i in range(3, 6)]
         print(f'cascade progression (in->out): {cascade_progression}')
-
-
-        
         parallel_neck_input = sum(downchannel_progression)
         PNDC = 1.5
         c = power_2_rounding(parallel_neck_input/3)
+        print(f'parallel neck progression: {parallel_neck_input}, {c}, {[power_2_rounding(c/(PNDC**n)) for n in [1,2,3]]}')
+
+        
+
         print(f'head progression: {[hgf(i, c, pndc=PNDC) for i in [5, 4, 3, 2]]}, 1')
         
-        print(f'parallel neck progression: {parallel_neck_input}, {c}, {[power_2_rounding(c/(PNDC**n)) for n in [1,2,3]]}')
+       
         self.parallel_neck = nn.Sequential(
             #so while this is technically double SE (outputs from interp are SE'd)
             #we global SE those 'local' SE from the interp blocks
             #might be suboptimal but im guessing the 'local' SE blocks will still help our cascade features so
             nn.SiLU(inplace=True),
             nnblock.SEBlock3d(parallel_neck_input, reduction=4),#
-            nnblock.PreActDownchannel3d(parallel_neck_input, c,drop_path_p=drop_path_p,norm_type="gn"),
+            nn.Conv3d(parallel_neck_input, c,kernel_size=1, bias=False),
             nnblock.PreActResBlock3d(c,power_2_rounding(c/(PNDC**1)), norm_type="gn", drop_path_p=drop_path_p),
             nnblock.PreActResBlock3d(power_2_rounding(c/(PNDC**1)),power_2_rounding(c/(PNDC**2)), norm_type="gn", drop_path_p=drop_path_p),
             nnblock.PreActResBlock3d(power_2_rounding(c/(PNDC**2)),power_2_rounding(c/(PNDC**3)), norm_type="gn", drop_path_p=drop_path_p),
@@ -190,7 +193,7 @@ class PCFPN(nn.Module):
             nn.Dropout3d(p=self.dropout_p),
             nn.SiLU(inplace=True),#act before se is unconventional but it seemed to show same or slightly better performance
             nnblock.SEBlock3d(hgf(5, c, pndc=PNDC), reduction=4),
-            nnblock.PreActDownchannel3d(hgf(5, c, pndc=PNDC), hgf(4, c, pndc=PNDC),drop_path_p=drop_path_p,norm_type="gn"),
+            nn.Conv3d(hgf(5, c, pndc=PNDC), hgf(4, c, pndc=PNDC), kernel_size=1, bias=False),
             nnblock.PreActResBlock3d(hgf(4, c, pndc=PNDC), hgf(3, c, pndc=PNDC), kernel_size=3, drop_path_p=drop_path_p,norm_type="gn"),
             nnblock.PreActResBlock3d(hgf(3, c, pndc=PNDC), hgf(2, c, pndc=PNDC), kernel_size=3, drop_path_p=drop_path_p,norm_type="gn"),
             nnblock.get_norm_layer("gn", hgf(2, c, pndc=PNDC)),
@@ -242,9 +245,10 @@ class PCFPN(nn.Module):
         check_tensor('interp_16_x', interp_16_x)
         check_tensor('interp_32_x', interp_32_x)
         
-        cascade2_x = self.cascade_2(interp_2_x)
-        cascade4_x = self.cascade_4(torch.cat([cascade2_x, interp_4_x], dim=1))
-        cascade8_x = self.cascade_8(torch.cat([cascade4_x, interp_8_x], dim=1))
+        # cascade2_x = self.cascade_2(interp_2_x)
+        # cascade4_x = self.cascade_4(torch.cat([cascade2_x, interp_4_x], dim=1))
+        # cascade8_x = self.cascade_8(torch.cat([cascade4_x, interp_8_x], dim=1))
+        cascade8_x = self.cascade_8(interp_8_x)
         cascade16_x = self.cascade_16(torch.cat([cascade8_x, interp_16_x], dim=1))
         cascade32_x = self.cascade_32(torch.cat([cascade16_x, interp_32_x], dim=1))
 

@@ -3,22 +3,24 @@ Visualize SE (Squeeze-and-Excitation) block channel attention weights in the pc_
 """
 
 import sys
-sys.path.insert(0, r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp')
-
+from pathlib import Path
+current_dir = Path.cwd()
+sys.path.append(str(Path.cwd()))
+# from models.fpn_comparison.parallel_fpn_cornernet9.model_defs.motor_detector import MotorDetector
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
+
 from sklearn.model_selection import train_test_split
 import random
 from model_defs.motor_detector import MotorDetector
 from tqdm import tqdm
 
 
-DEFAULT_CHECKPOINT = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\parallel_fpn_cornernet9\weights\best.pt'
+DEFAULT_CHECKPOINT = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\pc_fpn_cornernet4\weights\best.pt'
 master_tomo_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\processed\patch_pt_data')
 
-N_SAMPLES = 8
+N_SAMPLES = 6
 
 
 def main():
@@ -31,7 +33,7 @@ def main():
     model = detector.model.to(device)
 
     # Get SE block
-    se_block = model.interp_r_8[2]
+    se_block = model.parallel_neck[1]
     n_channels = se_block.fc[0].in_channels
     print(f'SE block: {n_channels} channels')
     
@@ -39,7 +41,7 @@ def main():
     tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
     train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
     val_id_list = train_id_list
-
+    
 
     all_patches = []
     for tomo_id in val_id_list:

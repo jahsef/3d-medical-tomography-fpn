@@ -215,7 +215,7 @@ if __name__ == "__main__":
         'prefetch_factor': 1,
 
         # Paths
-        'save_dir': './models/fpn_comparison/pc_fpn_cornernet3',  
+        'save_dir': './models/fpn_comparison/pc_fpn_cornernet4',  
         'exist_ok':False,
         
         # Other
@@ -269,7 +269,7 @@ if __name__ == "__main__":
             if current_step <= warmup_steps:
                 return float(current_step) / float(max(1, warmup_steps))
             progress = (current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-            return 0.5 * (1. + math.cos(math.pi * progress)) + 0.01  # Min LR = 1% of initial LR
+            return max(0.5 * (1. + math.cos(math.pi * progress)), 0.01)  # Min LR = 1% of initial LR
         
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
