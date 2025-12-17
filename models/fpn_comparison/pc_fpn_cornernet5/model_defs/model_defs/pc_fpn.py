@@ -239,7 +239,7 @@ class PCFPN(nn.Module):
         interp_params = [sum(p.numel() for p in module.parameters() if p.requires_grad)
                         for module in interp_modules]
         total_interp = sum(interp_params)
-        
+
         # Cascade neck params
         cascade_modules = [self.cascade_8, self.cascade_16, self.cascade_32]
         cascade_names = ['cascade_8', 'cascade_16', 'cascade_32']

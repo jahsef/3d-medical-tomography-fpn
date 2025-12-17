@@ -79,8 +79,17 @@ def save_patches_placeholder(
     tomo_dir = dst / tomo_dict['tomo_id']
     Path.mkdir(tomo_dir)
     tomo_array = tomo_dict['tomo_array']
-    assert tomo_array.ndim == 4, "expected tomo array to be c,d,h,w"
-    availability_heatmap = np.zeros(tomo_array.shape[1:] // downsampling_factor)
+    assert tomo_array.ndim == 3, "expected tomo array to be d,h,w"
+    shape = np.array(tomo_array.shape)//16
+    
+    availability_heatmap = np.zeros((5,*shape))
+    # 0 multi motor region
+    # 1 single motor region
+    # 2 hard negative region
+    # 3 random negative region
+    # 4 actual motor locations
+    
+    #TODO POPULATE AVAILABILITY HEATMAP ACTUAL MOTOR LOCATIONS HERE
     
     #SAMPLING PLAN: per motor: N single, M hard neg, X random neg
     #               per tomogram: up to total_motors * Y multi-motor patches (best effort)
@@ -101,8 +110,8 @@ def save_patches_placeholder(
     #HARD NEGATIVE (close to motor locations but not motor locations)
     
     #max range to consider 'hard', cannot be farther than 0.5*patch_size l1 distance
-    #top left (start_idx): motor_idx - 1.5*patch_size
-    #bottom right (start_idx): motor_idx + 0.5*patch_size 
+    #top left (patch_origin): motor_idx - 1.5*patch_size
+    #bottom right (patch_origin): motor_idx + 0.5*patch_size 
     #min range to consider 'hard', cannot be too close otherwise its too ambiguous
     #patch center to motor idx l2 distance.
     #dist >= 1.1 * L2Norm (d/2, h/2, w/2)
@@ -123,49 +132,167 @@ def save_patches_placeholder(
     
     pass
 
-def generate_gaussian_label(motor_coords,downsampling_factor, angstrom_blob_sigma):
-    """
-    Generate gaussian blob and apply weighting on target device with no intermediate transfers.
-    Assumes input grids are already on target_device.
+def generate_gaussian_label(downsampled_local_motor_coords,downsampled_patch_shape, angstrom_sigma, voxel_spacing):
+    pixel_sigma = angstrom_sigma / voxel_spacing
+    #local motor coords in realspace
+    #convert to local motor coords in downsampled space
     
-    Returns:
-        torch.Tensor: Weighted gaussian label on target_device
-    """
-    label_d, label_h, label_w = motor_coords
-    gaussian_blob = torch.exp(-((grid_d-label_d)**2 + 
-                               (grid_h-label_h)**2 + 
-                               (grid_w-label_w)**2)/(2*blob_sigma_pixels**2)).to(torch.float16).unsqueeze(0) 
+    label_d, label_h, label_w = downsampled_local_motor_coords
+    grid_d = torch.arange(downsampled_patch_shape[0])[:, None, None]
+    grid_h = torch.arange(downsampled_patch_shape[1])[None, :, None]
+    grid_w = torch.arange(downsampled_patch_shape[2])[None, None, :]
+    dist_sq = (grid_d-label_d)**2 + (grid_h-label_h)**2 + (grid_w-label_w)**2
+    gaussian_blob = torch.exp(-dist_sq/(2*pixel_sigma**2)).to(torch.float16).unsqueeze(0) 
     return gaussian_blob
+
 #ALL OF THESE FUNCTIONS RETURN INDICES IF APPLICABLE
 #then in the save patches orchestrator function we generate gaussians there and save
 #probably return motor_idx, type
 #also pass reference of shape same as heatmap indicating which voxels are taken and which are available. so i guess 0 could be available nothigns there 1 is unavailable. 
 # multi,single and hrad negative will populate that and the random negative function samples from that
-def _multi_motor_save(multi_motor_samples:int) -> None:
-    pass
-
-def _single_motor_save(single_motor_samples:int, tomo_array: np.ndarray,
-    motors: list[tuple[float, float, float]],
+def _multi_motor_save(
+    multi_motor_samples:int,
+    tomo_dict:dict,
     tomo_dir: Path,
-    availability_heatmap:np.ndarray) -> None:
+    availability_heatmap:np.ndarray,
+    downsampling_factor:int,
+    angstrom_sigma:float,
+    ) -> int:
+    
+    motors = tomo_dict['motors']
+    tomo_array = tomo_dict['tomo_array']
+    voxel_spacing = tomo_dict['voxel_spacing']
+    
+    for i,motor_idx_tuple_i in enumerate(motors):
+        patch_size = tomo_array.shape
+        motor_idx_arr_i = np.asarray(motor_idx_tuple_i) #hopefully np can handle tuple => arr?
+
+        ### FIND VALID RANGES FOR MULTI MOTORS
+        for j,motor_idx_tuple_j in enumerate(motors):
+            if j <= i:
+                continue#only generate valid combinations (triu indices)
+            
+            motor_idx_arr_j = np.asarray(motor_idx_tuple_j)
+            if np.any(np.abs(motor_idx_arr_i - motor_idx_arr_j) >= patch_size):
+                continue  # too far apart to fit in one patch
+            
+            lo = np.minimum(motor_idx_arr_i, motor_idx_arr_j)
+            hi = np.maximum(motor_idx_arr_i, motor_idx_arr_j)
+            #only accessing the multi motor slice
+            availability_heatmap[0, lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] = 1
+    ### IF NO VALID INDICES EXIST, EXIT
+    valid_indices = np.argwhere(availability_heatmap[0]) #should be (N, heatmap.ndim (3))
+    if(valid_indices.shape[0] == 0):
+        return
+        
+    order = np.lexsort((valid_indices[:, 2], valid_indices[:, 1], valid_indices[:, 0]))
+    sorted_indices = valid_indices[order]
+    stride = min(valid_indices.shape[0] // multi_motor_samples, 1) #10 indices, 5 samples, stride 2. 4 indices 5 samples stride 1 (clamped by the loop later anyway)
+    i = 0
+    saved_patches = 0
+    #generate all patches with stratified sampling
+    for _ in range(max(multi_motor_samples, valid_indices.shape[0])):
+        patch_origin = sorted_indices[i]
+        i += stride
+        patch_end = patch_origin+patch_size
+        patch = tomo_array[patch_origin[0]:patch_end[0], patch_origin[1]:patch_end[1], patch_origin[2]:patch_end[2]]
+        
+        #it should be guaranteed that there are 2 motors here
+        downsampled_origin = patch_origin//downsampling_factor
+        downsampled_end = patch_end//downsampling_factor
+        downsampled_motor_mask = availability_heatmap[4, downsampled_origin[0]:downsampled_end[0], downsampled_origin[1]:downsampled_end[1], downsampled_origin[2]:downsampled_end[2]]
+        downsampled_motor_indices = np.argwhere(downsampled_motor_mask) #(N,3)
+        assert downsampled_motor_indices.shape[0] >= 2, f"EXPECTED >=2 MOTORS DETECTED IN PATCH FOR MULTI MOTOR CASE, FOUND: {downsampled_motor_indices.shape[0]}"
+        max_gaussian = torch.zeros(size = availability_heatmap.shape[0:])
+        #get max gaussian from all motors present in the patch
+        for j in range(downsampled_motor_indices.shape[0]):
+            downsampled_local_motor_coords = downsampled_motor_indices[j] - patch_origin
+            max_gaussian = torch.maximum(max_gaussian, generate_gaussian_label(downsampled_local_motor_coords=downsampled_local_motor_coords, downsampled_patch_shape=availability_heatmap.shape[0:], angstrom_sigma=angstrom_sigma, voxel_spacing=voxel_spacing)) #element wise max, .max() just returns actual max value
+
+        torch.save(
+            obj = {
+                'patch': patch, #everything should be saved in d,h,w format, we leave it up to dataset to expand channel dimension
+                'gaussian': max_gaussian,
+                'patch_type': "multi_motor"
+            },
+            f = tomo_dir/f'patch_{patch_origin[0]}_{patch_origin[1]}_{patch_origin[2]}.pt'
+        ) 
+        saved_patches+=1
+    return saved_patches
+        
+
+
+def _single_motor_save(
+    single_motor_samples:int,
+    tomo_dict:dict,
+    tomo_dir: Path,
+    availability_heatmap:np.ndarray,
+    downsampling_factor:int,
+    angstrom_sigma:float,
+    ) -> None:
     #single motor: generate range, motor_idx - patch_size
+    motors = tomo_dict['motors']
+    tomo_array = tomo_dict['tomo_array']
+    voxel_spacing = tomo_dict['voxel_spacing']
+    patch_size = tomo_array.shape
+    #populate availability arr
+    for motor_idx_tuple in motors:
+        motor_idx_arr = np.array(motor_idx_tuple)
+        downsampled_patch_size = patch_size//downsampling_factor
+        downsampled_motor_idx = motor_idx_arr//downsampling_factor
+        downsampled_start_range = downsampled_motor_idx - downsampled_patch_size
+        downsampled_end_range = downsampled_motor_idx
+        availability_heatmap[1,downsampled_start_range[0]:downsampled_end_range[0], downsampled_start_range[1]:downsampled_end_range[1], downsampled_start_range[2]:downsampled_end_range[2]]
     
-    for motor in motors:
+    #now that we have availability arr populated we can do stratified sample from there
+    #patch origin converted to realspace should add [0,patch_size-1] to each dimension as to avoid any grid bias
+    downsampled_valid_indices = np.argwhere(availability_heatmap[1]) #N,3
+    order = np.lexsort((downsampled_valid_indices[:, 2], downsampled_valid_indices[:, 1], downsampled_valid_indices[:, 0]))
+    downsampled_sorted_indices = downsampled_valid_indices[order]
+    stride = min(downsampled_valid_indices.shape[0] // single_motor_samples, 1) #10 indices, 5 samples, stride 2. 4 indices 5 samples stride 1 (clamped by the loop later anyway)
+    i = 0
+    saved_patches = 0
+    #generate all patches with stratified sampling
+    
+    for _ in range(max(single_motor_samples, downsampled_sorted_indices.shape[0])):
+        downsampled_patch_origin = downsampled_sorted_indices[i]
+        patch_origin = downsampled_patch_origin*16 + np.random.randint(0,16) #add 0-15 to avoid grid bias
+        i += stride
+        patch_end = patch_origin+patch_size
+        patch = tomo_array[patch_origin[0]:patch_end[0], patch_origin[1]:patch_end[1], patch_origin[2]:patch_end[2]]
         
-        patch_size = tomo_array.shape[1:]
-        motor_dhw = np.asarray(motor) #hopefully np can handle tuple => arr?
+        torch.save(
+            obj = {
+                'patch': patch,
+                'gaussian': generate_gaussian_label(downsampled_local_motor_coords=downsampled_local_motor_coords,downsampled_patch_shape=availability_heatmap.shape[1:], angstrom_sigma=angstrom_sigma, voxel_spacing=voxel_spacing),
+                'patch_type': "single_motor"
+            },
+            f = tomo_dir/f'patch_{patch_origin[0]}_{patch_origin[1]}_{patch_origin[2]}.pt'
+        )
+        
+    for motor_idx_tuple in motors:
+        patch_size = tomo_array.shape
+        motor_idx_arr = np.asarray(motor_idx_tuple) #hopefully np can handle tuple => arr?
         #ensure valid range
-        start_range = np.clip(motor_dhw - patch_size, [0,0,0], patch_size)
-        end_range = motor_dhw
-        
+        start_range = np.clip(motor_idx_arr - patch_size, [0,0,0], patch_size)
+        end_range = motor_idx_arr #motor is in top left voxel of a patch
         for _ in range(single_motor_samples):
-            sample_idx = np.random.randint(start_range, end_range, size = start_range.shape)
+            patch_origin = np.random.randint(start_range, end_range, size = start_range.shape)
             
-            patch = tomo_array[:, sample_idx:sample_idx+patch_size].copy()
-            #something weird with views when you save it, it saves the whole array?
-            
-    
-    pass
+            patch = tomo_array[:, patch_origin:patch_origin+patch_size].copy()#need to copy otherwise saves the whole array
+            #only accessing the single motor slice
+            availability_heatmap[1, start_range[0]:end_range[0],start_range[1]:end_range[1], start_range[2]:end_range[2] ] = 1
+            local_motor_coords = motor_idx_arr - patch_origin
+            downsampled_local_motor_coords = local_motor_coords // downsampling_factor
+            torch.save(
+                obj = {
+                    'patch': patch,
+                    'gaussian': generate_gaussian_label(downsampled_local_motor_coords=downsampled_local_motor_coords,downsampled_patch_shape=availability_heatmap.shape[1:], angstrom_sigma=angstrom_sigma, voxel_spacing=voxel_spacing),
+                    'patch_type': "single_motor"
+                },
+                f = tomo_dir/f'patch_{patch_origin[0]}_{patch_origin[1]}_{patch_origin[2]}.pt'
+            )
+
 
 def _hard_negative_save(hard_negative_samples:int) -> None:
     #hard negative case may be harder than expected because of multi motor cases, we cant just look at  1 motor
