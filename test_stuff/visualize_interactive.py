@@ -3,38 +3,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 from pathlib import Path
-from sklearn.model_selection import train_test_split
-import pandas as pd
 import imageio.v3 as iio
 from natsort import natsorted
 import sys
 
-current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 from model_defs.motor_detector import MotorDetector
+from train.utils import get_tomo_folds, load_ground_truth
 
-    
-# Configuration (same as visualize_inference.py)
+
+# Configuration
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/simple_unet_cornernet/weights\best.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_data/parallel_fpn_cornernet_fold0_2/weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
-master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
+
+VIS_FOLDS = [0]
 
 batch_size = 6
 patch_size = (160, 288, 288)
-overlap = 0.5
+overlap = 0.75
 sigma_scale = 1/8
 downsampling_factor = 16
 
-norm_type = "gn"
+# Get tomograms for visualization based on fold
+tomo_folds = get_tomo_folds()
+vis_id_list = [tomo_id for tomo_id, fold in tomo_folds.items() if fold in VIS_FOLDS]
+vis_id_list = vis_id_list[::5]  # Stride to reduce number
 
-# Dataset split (same as visualize_inference.py)
-tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
-train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
-train_id_list = train_id_list[::5]  # Same striding
-
-print(f'Tomograms to visualize: {len(train_id_list)}')
+print(f'Tomograms to visualize: {len(vis_id_list)}')
 
 
 def normalize_tomogram(tomo_array):
@@ -62,22 +59,6 @@ def load_tomogram(src: Path):
     normalized = normalize_tomogram(raw_array)
 
     return torch.as_tensor(normalized), raw_array
-
-
-def get_gt_motors(tomo_id, labels_path):
-    """Get all ground truth motor locations for a tomogram."""
-    df = pd.read_csv(labels_path)
-    tomo_rows = df[df['tomo_id'] == tomo_id]
-
-    motors = []
-    for _, row in tomo_rows.iterrows():
-        if row['Motor axis 0'] != -1:  # Valid motor
-            motors.append([
-                row['Motor axis 0'],
-                row['Motor axis 1'],
-                row['Motor axis 2']
-            ])
-    return motors
 
 
 class InteractiveTomoViewer:
@@ -233,20 +214,23 @@ class InteractiveTomoViewer:
 def run_interactive_visualization():
     """Main function to run interactive tomogram visualization."""
     # Load model
-    model,_ = MotorDetector.load_checkpoint(model_path)
+    model, _ = MotorDetector.load_checkpoint(model_path)
     model = model.to(device)
     model.eval()
-    
+
     print(f"Loaded model from {model_path}")
-    print(f"Processing {len(train_id_list)} tomograms")
+    print(f"Processing {len(vis_id_list)} tomograms")
     print("Close the window to move to next tomogram\n")
 
-    for tomo_id in train_id_list:
+    # Load ground truth for all visualization tomograms (returns downsampled coords)
+    ground_truth = load_ground_truth(labels_path, vis_id_list, downsampling_factor)
+
+    for tomo_id, motors_ds in ground_truth.items():
         print(f"\n{'='*50}")
         print(f"Processing {tomo_id}...")
 
-        # Get GT motors for this tomogram
-        gt_motors = get_gt_motors(tomo_id, labels_path)
+        # Convert motors back to real space for InteractiveTomoViewer
+        gt_motors = [[m[0] * downsampling_factor, m[1] * downsampling_factor, m[2] * downsampling_factor] for m in motors_ds]
         print(f"Found {len(gt_motors)} ground truth motors")
 
         # Load tomogram

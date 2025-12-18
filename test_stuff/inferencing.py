@@ -2,10 +2,8 @@ import torch
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from sklearn.model_selection import train_test_split
 from scipy.optimize import linear_sum_assignment
 from natsort import natsorted
-import imageio.v3 as iio
 import cv2
 from tqdm import tqdm
 import threading
@@ -13,12 +11,12 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import queue
 import sys
 import multiprocessing as mp
-from multiprocessing import shared_memory
 import time
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 from model_defs.motor_detector import MotorDetector
+from train.utils import get_tomo_folds, load_ground_truth
 
 # from models.fpn_comparison.parallel_fpn_cornernet9.model_defs.motor_detector import MotorDetector
 
@@ -31,7 +29,7 @@ logging.basicConfig(level=logging.WARNING,
 
 
 # Configuration Parameters
-MODEL_DIR = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\pc_fpn_cornernet4')
+MODEL_DIR = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_data_300sigma\parallel_fpn_cornernet_fold0')
 WEIGHT_FILE = 'best.pt'  # 'best.pt' or 'epoch0.pt'
 MODEL_PATH = MODEL_DIR / 'weights' / WEIGHT_FILE
 print(f"loading from: {MODEL_PATH}")
@@ -46,12 +44,10 @@ OUTPUT_CSV_NAME = 'results.csv'
 #10:
 
 # Dataset Split Configuration
-tomo_id_list = [dir.name for dir in MASTER_TOMO_PATH.iterdir() if dir.is_dir()]
-train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
-val_id_list = train_id_list[:len(train_id_list):5]
-# val_id_list = train_id_list[:len(train_id_list):30]  
-# val_id_list = train_id_list[len(train_id_list)//15*4:len(train_id_list)//15*8 :4]
-# val_id_list = ['tomo_d7475d'] 
+INFERENCE_FOLDS = [0]
+tomo_folds = get_tomo_folds()
+val_id_list = [tomo_id for tomo_id, fold in tomo_folds.items() if fold in INFERENCE_FOLDS] 
+val_id_list = val_id_list[::5]
 
 # Inference Parameters
 DOWNSAMPLING_FACTOR = 16
@@ -116,24 +112,6 @@ def load_tomogram(src_path):
     # logging.debug(f'load_tomogram() TOTAL: {time.perf_counter() - start_time:.3f}s')
     return tensor
 
-def load_ground_truth(csv_path, tomo_ids):
-    """Load ground truth motor locations, optionally downsampled."""
-    df = pd.read_csv(csv_path)
-    gt_dict = {}
-    for tomo_id in tomo_ids:
-        tomo_rows = df[df['tomo_id'] == tomo_id]
-        motors = []
-        for _, row in tomo_rows.iterrows():
-            if row['Motor axis 0'] != -1:
-                # Apply downsampling to ground truth coordinates
-                motor_coords = [
-                    row['Motor axis 0'] / DOWNSAMPLING_FACTOR,
-                    row['Motor axis 1'] / DOWNSAMPLING_FACTOR, 
-                    row['Motor axis 2'] / DOWNSAMPLING_FACTOR
-                ]
-                motors.append(motor_coords)
-        gt_dict[tomo_id] = motors
-    return gt_dict
 
 
 
@@ -312,7 +290,7 @@ def main():
     print(f"Processing {len(val_id_list)} validation tomograms")
     
     # Load ground truth
-    ground_truth = load_ground_truth(GROUND_TRUTH_CSV, val_id_list)
+    ground_truth = load_ground_truth(GROUND_TRUTH_CSV, val_id_list, DOWNSAMPLING_FACTOR)
     
     # Threading setup
     tomo_queue = queue.Queue(maxsize=TOMOGRAM_QUEUE_SIZE)
@@ -356,7 +334,7 @@ def main():
                 'tp': tp, 'fp': fp, 'fn': fn
             })
 
-    OUTPUT_DIR.mkdir(exist_ok=False)
+    OUTPUT_DIR.mkdir(exist_ok=True)
     results_df = pd.DataFrame(results_data)
     results_df.to_csv(OUTPUT_DIR / OUTPUT_CSV_NAME, index=False)
 

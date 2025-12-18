@@ -4,37 +4,36 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from matplotlib.patches import Circle
 import sys
-from sklearn.model_selection import train_test_split
 
-# Add transforms support
-from monai import transforms
-from monai.data import DataLoader, CacheDataset
 from monai.transforms import Compose
 
 current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 
-from models.fpn_comparison.parallel_fpn_cornernet20.model_defs.motor_detector import MotorDetector
+# from models.fpn_comparison.parallel_fpn_cornernet20.model_defs.motor_detector import MotorDetector
+from model_defs.motor_detector import MotorDetector
+from train.utils import get_tomo_folds
 
-# from ._NOSKIPCASCADE import MotorIdentifier
+tomo_folds = get_tomo_folds()
 
-tomo = 'tomo_9c0253'
-patch_dir = Path.cwd() / 'data/processed/patch_pt_data' / tomo
+# Config
+VIS_FOLDS = [0]
 
-master_tomo_path = Path.cwd() / 'data/processed/patch_pt_data'
-tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
+master_tomo_path = Path.cwd() / 'data/processed/old_data_300sigma'
+tomo_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir() and tomo_folds[dir.name] in VIS_FOLDS]
 
-train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
+patch_files = []
+for tomo_dir in tomo_list:
+    patch_files.extend(tomo_dir.glob('*.pt'))
 
-print(f'IS TOMO IN TRAINING DATA: {tomo in train_id_list}')
-print(f'tomo list head: ')
-print(train_id_list[:10])
-tomo = train_id_list[7]
+print(f'Found {len(patch_files)} patches')
 
-checkpoint = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/parallel_fpn_cornernet20/weights/best.pt'
-# print("HERE")
+print(f'Total tomos in folds {VIS_FOLDS}: {len(tomo_list)}')
+
+
+
+checkpoint = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_data_300sigma/parallel_fpn_cornernet_fold0/weights/best.pt'
 device = torch.device('cpu')
 model, _ = MotorDetector.load_checkpoint(checkpoint)
 model = model.to(device)
@@ -70,103 +69,134 @@ def create_gaussian_blob(shape, center, sigmas):
     
     return gaussian
 
-# print("HERE")
-for patch_file in patch_dir.glob('*.pt'):
-    print(f"\nProcessing: {patch_file.name}")
-    
-    patch_dict = torch.load(patch_file)
+class InferenceViewer:
+    def __init__(self, patch_files, model, device):
+        self.patch_files = list(patch_files)
+        self.model = model
+        self.device = device
+        self.patch_idx = 0
+        self.slice_idx = 0
 
-    transformed_dict = test_transforms(patch_dict)
-    patch = transformed_dict['patch'].to(device)
-    
-    if patch.dim() == 3:
-        patch = patch.unsqueeze(0).unsqueeze(0) 
-    if patch.dim() == 4:
-        patch = patch.unsqueeze(0)
-    patch = patch.float()
-    print(f"Input shape: {patch.shape}")
-    
-    with torch.amp.autocast(device_type='cuda'):
+        self.fig, self.axes = plt.subplots(1, 3, figsize=(16, 5))
+        self.fig.canvas.mpl_connect('key_press_event', self.on_key)
+
+        self._load_current_patch()
+        self._update_display()
+        plt.show()
+
+    def _load_current_patch(self):
+        patch_dict = torch.load(self.patch_files[self.patch_idx], weights_only=False)
+        self.patch_data = patch_dict['patch'].numpy()
+
+        # Squeeze channel dim if present (old format is 4D)
+        if self.patch_data.ndim == 4:
+            self.patch_data = self.patch_data.squeeze(0)
+
+        # Handle old format without gaussian key
+        if 'gaussian' in patch_dict:
+            self.gt_gaussian = patch_dict['gaussian'].numpy()
+            if self.gt_gaussian.ndim == 4:
+                self.gt_gaussian = self.gt_gaussian.squeeze(0)
+            self.has_gt = True
+        else:
+            # Old format - create zeros array from squeezed patch shape
+            ds_shape = tuple(s // DOWNSAMPLING_FACTOR for s in self.patch_data.shape)
+            self.gt_gaussian = np.zeros(ds_shape, dtype=np.float32)
+            self.has_gt = False
+
+        self.patch_type = patch_dict.get('patch_type', 'unknown')
+
+        # Run inference - handle different patch formats
+        patch_tensor = patch_dict['patch'].float()
+        if patch_tensor.ndim == 3:  # (D, H, W) - new format
+            patch_tensor = patch_tensor.unsqueeze(0).unsqueeze(0)
+        elif patch_tensor.ndim == 4:  # (1, D, H, W) - old format with channel
+            patch_tensor = patch_tensor.unsqueeze(0)
+        patch_tensor = patch_tensor.to(self.device)
         with torch.no_grad():
-            results = torch.sigmoid_(model.forward(patch))
-    
-    label = patch_dict['labels']
-    gt_coords_full = label[0, :3].numpy()  # Full resolution coordinates
-    gt_coords_down = gt_coords_full // DOWNSAMPLING_FACTOR  # Downsampled coordinates
-    
-    results = results.reshape(results.shape[2:]).cpu().numpy()
-    print(f"Results shape: {results.shape}")
-    
-    # Create theoretical perfect gaussian
-    d_i, h_i, w_i = results.shape
-    min_dim = min([d_i, h_i, w_i])
-    blob_sigma_d = GAUSSIAN_SIGMA * (d_i / min_dim) / DOWNSAMPLING_FACTOR
-    blob_sigma_h = GAUSSIAN_SIGMA * (h_i / min_dim) / DOWNSAMPLING_FACTOR  
-    blob_sigma_w = GAUSSIAN_SIGMA * (w_i / min_dim) / DOWNSAMPLING_FACTOR
-    
-    theoretical_heatmap = create_gaussian_blob(results.shape, gt_coords_down, 
-                                             [blob_sigma_d, blob_sigma_h, blob_sigma_w])
-    
-    # Get slices
-    gt_slice = results[gt_coords_down[0], ...]  # GT depth slice
-    
-    argmax = np.asarray(np.unravel_index(np.argmax(results), shape=results.shape))
-    global_max_slice = results[argmax[0], ...]  # Global max depth slice
-    
-    original_slice = patch[0,0, gt_coords_full[0], ...].cpu().numpy() 
-    
-    theoretical_slice = theoretical_heatmap[gt_coords_down[0], ...]  # Theoretical perfect slice
-    
-    # Calculate distances (in downsampled space)
-    distance = np.sqrt(np.sum((gt_coords_down - argmax)**2))
-    print(f'GT coords (full res): {gt_coords_full}')
-    print(f'GT coords (downsampled): {gt_coords_down}')
-    print(f'Global max coords: {argmax}')
-    print(f'Distance: {distance:.4f}')
-    print(f'Blob sigmas (d,h,w): {blob_sigma_d:.2f}, {blob_sigma_h:.2f}, {blob_sigma_w:.2f}')
-    
-    # Find slice maxima
-    gt_slice_max = np.unravel_index(np.argmax(gt_slice), shape=gt_slice.shape)
-    global_slice_max = np.unravel_index(np.argmax(global_max_slice), shape=global_max_slice.shape)
-    
-    # Create 4-panel plot
-    fig, axes = plt.subplots(1, 4, figsize=(24, 6))
-    
-    # GT slice
-    im1 = axes[0].imshow(gt_slice, cmap='plasma', vmin = 0, vmax = 1)
-    axes[0].set_title(f'GT Slice (d={gt_coords_down[0]})')
-    gt_circle = Circle((gt_coords_down[2], gt_coords_down[1]), radius=2, 
-                      fill=False, color='green', linewidth=2)
-    pred_circle = Circle((gt_slice_max[1], gt_slice_max[0]), radius=2, 
-                        fill=False, color='red', linewidth=2)
-    axes[0].add_patch(gt_circle)
-    axes[0].add_patch(pred_circle)
-    plt.colorbar(im1, ax=axes[0])
-    
-    # Global max slice
-    im2 = axes[1].imshow(global_max_slice, cmap='plasma', vmin = 0, vmax = 1)
-    axes[1].set_title(f'Global Max Slice (d={argmax[0]})')
-    global_circle = Circle((global_slice_max[1], global_slice_max[0]), radius=2, 
-                          fill=False, color='red', linewidth=2)
-    axes[1].add_patch(global_circle)
-    plt.colorbar(im2, ax=axes[1])
-    
-    # Original slice
-    im3 = axes[2].imshow(original_slice, cmap='gray')
-    axes[2].set_title(f'Original Slice (d={gt_coords_full[0]})')
-    orig_gt_circle = Circle((gt_coords_full[2], gt_coords_full[1]), radius=3, 
-                           fill=False, color='green', linewidth=2)
-    axes[2].add_patch(orig_gt_circle)
-    plt.colorbar(im3, ax=axes[2])
-    
-    # Theoretical perfect slice
-    im4 = axes[3].imshow(theoretical_slice, cmap='plasma', vmin = 0, vmax = 1)
-    axes[3].set_title(f'Theoretical Perfect (d={gt_coords_down[0]})')
-    theo_circle = Circle((gt_coords_down[2], gt_coords_down[1]), radius=2, 
-                        fill=False, color='green', linewidth=2)
-    axes[3].add_patch(theo_circle)
-    plt.colorbar(im4, ax=axes[3])
-    
-    plt.suptitle(f'{patch_file.name} - Realspace dist: {distance*DOWNSAMPLING_FACTOR:.4f}', fontsize=16)
-    plt.tight_layout()
-    plt.show()
+            self.pred = torch.sigmoid(self.model.forward(patch_tensor)).squeeze().cpu().numpy()
+
+        # Compute metrics (only meaningful if GT exists)
+        if self.has_gt:
+            self.mae = np.mean(np.abs(self.pred - self.gt_gaussian))
+            intersection = np.sum(self.pred * self.gt_gaussian)
+            self.dice = 2 * intersection / (np.sum(self.pred) + np.sum(self.gt_gaussian) + 1e-8)
+        else:
+            self.mae = None
+            self.dice = None
+        self.max_conf = self.pred.max()
+
+        # Check if max locations match (only meaningful if GT has a motor)
+        self.gt_max_idx = [int(i) for i in np.unravel_index(np.argmax(self.gt_gaussian), self.gt_gaussian.shape)]
+        self.pred_max_idx = [int(i) for i in np.unravel_index(np.argmax(self.pred), self.pred.shape)]
+        self.has_motor = self.has_gt and self.gt_gaussian.max() > 0.1
+        self.max_match = self.gt_max_idx == self.pred_max_idx if self.has_motor else None
+
+        # Set initial slice to GT peak depth or center
+        self.slice_idx = self.gt_max_idx[0] if self.has_motor else self.gt_gaussian.shape[0] // 2
+
+    def _update_display(self):
+        for ax in self.axes:
+            ax.clear()
+
+        # Map downsampled slice to real space
+        real_slice = self.slice_idx * DOWNSAMPLING_FACTOR + DOWNSAMPLING_FACTOR // 2
+        real_slice = min(real_slice, self.patch_data.shape[0] - 1)
+
+        # Left: patch
+        self.axes[0].imshow(self.patch_data[real_slice], cmap='gray')
+        self.axes[0].set_title(f'Patch (z={real_slice})')
+        self.axes[0].axis('off')
+
+        # Middle: inference
+        self.axes[1].imshow(self.pred[self.slice_idx], cmap='hot', vmin=0, vmax=1)
+        self.axes[1].set_title(f'Pred (max={self.max_conf:.3f})')
+        self.axes[1].axis('off')
+
+        # Right: GT gaussian
+        self.axes[2].imshow(self.gt_gaussian[self.slice_idx], cmap='hot', vmin=0, vmax=1)
+        self.axes[2].set_title(f'GT')
+        self.axes[2].axis('off')
+        
+        # Suptitle with metrics
+        if not self.has_gt:
+            match_str = f"NO GT (pred={self.pred_max_idx})"
+            metrics_str = f"max={self.max_conf:.3f}"
+        elif self.max_match is None:
+            match_str = f"NO MOTOR (pred={self.pred_max_idx})"
+            metrics_str = f"MAE={self.mae:.4f} | Dice={self.dice:.3f}"
+        elif self.max_match:
+            match_str = "MATCH"
+            metrics_str = f"MAE={self.mae:.4f} | Dice={self.dice:.3f}"
+        else:
+            match_str = f"MISS (pred={self.pred_max_idx} gt={self.gt_max_idx})"
+            metrics_str = f"MAE={self.mae:.4f} | Dice={self.dice:.3f}"
+        fname = self.patch_files[self.patch_idx].name
+        self.fig.suptitle(
+            f'{fname} | {self.patch_type} | {metrics_str} | {match_str}\n'
+            f'Patch {self.patch_idx+1}/{len(self.patch_files)} | Slice {self.slice_idx+1}/{self.gt_gaussian.shape[0]}'
+        )
+
+        self.fig.tight_layout()
+        self.fig.canvas.draw_idle()
+
+    def on_key(self, event):
+        if event.key == 'left':
+            self.patch_idx = (self.patch_idx - 1) % len(self.patch_files)
+            self._load_current_patch()
+        elif event.key == 'right':
+            self.patch_idx = (self.patch_idx + 1) % len(self.patch_files)
+            self._load_current_patch()
+        elif event.key == 'up':
+            self.slice_idx = min(self.slice_idx + 1, self.gt_gaussian.shape[0] - 1)
+        elif event.key == 'down':
+            self.slice_idx = max(self.slice_idx - 1, 0)
+        elif event.key == 'q':
+            plt.close(self.fig)
+            return
+
+        self._update_display()
+
+
+
+InferenceViewer(patch_files, model, device)

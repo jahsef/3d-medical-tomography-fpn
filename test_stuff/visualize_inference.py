@@ -2,8 +2,6 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from sklearn.model_selection import train_test_split
-import pandas as pd
 import imageio.v3 as iio
 from natsort import natsorted
 import sys
@@ -12,37 +10,28 @@ current_dir = Path.cwd()
 sys.path.append(str(Path.cwd()))
 
 from model_defs.motor_detector import MotorDetector
-# from models.fpn_comparison.parallel_fpn_cornernet9.model_defs.motor_detector import MotorDetector
+from train.utils import get_tomo_folds, load_ground_truth
 
 # Configuration
 device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison/pc_fpn_cornernet4/weights\best.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_data\parallel_fpn_cornernet_fold0\weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
-master_tomo_path = Path.cwd() / 'data\processed\patch_pt_data'
 
 batch_size = 6
-patch_size = (160,288,288)
-overlap = 0.5  # when overfitted looks like overlap matters a lot more lol
+patch_size = (160, 288, 288)
+overlap = 0.6
 sigma_scale = 1/8
 downsampling_factor = 16
-# Load dataset split
-tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
-train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
-#curriculum4
-#1/30:2
-#1/15:3
-#2/15:4(overwritten by 4/15)
-#4/15:4
 
-#after successful curriculum we can move to skip connection ae better enc:dec ratio 4:1 and gaussian weighting for labels (we can keep edge motors)
+# Fold-based filtering
+VIS_FOLDS = [0]
+tomo_folds = get_tomo_folds()
+vis_id_list = [tomo_id for tomo_id, fold in tomo_folds.items() if fold in VIS_FOLDS]
+# vis_id_list = vis_id_list[::5]
+vis_id_list = ['tomo_00e047']
 
-train_id_list = train_id_list[::5]
-# train_id_list = val_id_list
-# train_id_list = ['tomo_d7475d']
-# train_id_list = ['tomo_00e047']
-
-print(f'possible samples to inference: {len(train_id_list)}')
+print(f'possible samples to inference: {len(vis_id_list)}')
 
 def normalize_tomogram(tomo_array):
     """Normalize tomogram: convert to float16, scale to [0,1], then standardize."""
@@ -89,17 +78,9 @@ def load_original_slice(tomo_path: Path, depth_idx: int):
     slice_img = iio.imread(files[depth_idx], mode="L")
     return slice_img
 
-def get_single_motor_tomograms():
-    """Get list of tomogram IDs that have exactly 1 motor."""
-    
-    # Load labels and filter for single motors
-    df = pd.read_csv(labels_path)
-    single_motor_mask = df['Number of motors'] == 1
-    valid_motors = df[single_motor_mask]
-    bool_mask = valid_motors['tomo_id'].isin(train_id_list)
-    valid_motors = valid_motors[bool_mask]
-    
-    return valid_motors
+def get_single_motor_tomograms(ground_truth):
+    """Get dict of tomo_id -> motor_coords for tomos with exactly 1 motor."""
+    return {tomo_id: motors[0] for tomo_id, motors in ground_truth.items() if len(motors) == 1}
 
 def visualize_tomogram_results(tomo_id, heatmap, ground_truth_coords, original_data_path):
     """Visualize heatmap with ground truth and prediction circles, including original slice."""
@@ -205,44 +186,47 @@ def run_automated_visualization():
     detector, _ = MotorDetector.load_checkpoint(model_path)
     detector = detector.to(device)
     detector.eval()
-    
-    # Get valid tomograms
-    valid_motors = get_single_motor_tomograms()
-    print(f"Found {len(valid_motors)} tomograms with exactly 1 motor")
+
+    # Load ground truth (coords in downsampled space)
+    ground_truth = load_ground_truth(labels_path, vis_id_list, downsampling_factor)
+
+    # Get valid tomograms with single motor
+    single_motor_tomos = get_single_motor_tomograms(ground_truth)
+    print(f"Found {len(single_motor_tomos)} tomograms with exactly 1 motor")
     print(f"Using downsampling factor: {downsampling_factor}")
-    
-    for idx, row in valid_motors.iterrows():
-        tomo_id = row['tomo_id']
-        motor_coords = [row['Motor axis 0'], row['Motor axis 1'], row['Motor axis 2']]
-        
+
+    for tomo_id, motor_coords_ds in single_motor_tomos.items():
+        # Convert back to real space for visualization
+        motor_coords = [c * downsampling_factor for c in motor_coords_ds]
+
         print(f"\nProcessing {tomo_id}...")
         print(f"Original motor coordinates: {motor_coords}")
-        print(f"Downsampled motor coordinates: {[c//downsampling_factor for c in motor_coords]}")
-        
-        # Load tomogram (now with downsampling applied)
+        print(f"Downsampled motor coordinates: {motor_coords_ds}")
+
+        # Load tomogram
         tomo_path = original_data_path / tomo_id
         tomo = load_tomogram(tomo_path)
-        
+
         if tomo is None:
             print(f"Failed to load {tomo_id}, skipping...")
             continue
-        
-        print(f"Downsampled tomogram shape: {tomo.shape}")
-        
+
+        print(f"Tomogram shape: {tomo.shape}")
+
         # Prepare for inference
         original_shape = tomo.shape
         tomo_batch = tomo.reshape(1, 1, *original_shape).to(device)
-        
+
         # Run inference
         print("Running inference...")
-        results = detector.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale, dtype = torch.float16)
+        results = detector.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale, dtype=torch.float16)
         heatmap = results.view(results.shape[2:]).cpu().numpy()
-        
+
         print(f"Heatmap shape: {heatmap.shape}")
-        
-        # Visualize
+
+        # Visualize (pass real-space coords)
         visualize_tomogram_results(tomo_id, heatmap, motor_coords, original_data_path)
-    
+
     print("Visualization complete!")
 
 if __name__ == "__main__":
