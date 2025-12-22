@@ -1,0 +1,12 @@
+Model: parallel_fpn_regressioncornernet_fold0
+Weights: epoch15.pt
+
+Best F2 scores by prune radius:
+  r=0: F2=0.6380 @ thresh=0.69 (P=0.857, R=0.600)
+  r=1: F2=0.7410 @ thresh=0.39 (P=0.571, R=0.800)
+  r=2: F2=0.7410 @ thresh=0.39 (P=0.571, R=0.800)
+  r=3: F2=0.7410 @ thresh=0.39 (P=0.571, R=0.800)
+  r=4: F2=0.7410 @ thresh=0.39 (P=0.571, R=0.800)
+  r=5: F2=0.7550 @ thresh=0.39 (P=0.615, R=0.800)
+
+Overall best: F2=0.7550 @ r=5, thresh=0.39

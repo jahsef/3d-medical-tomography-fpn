@@ -11,6 +11,30 @@ near identity weighting (sigmoid(4.0) = 0.98) for all channels, no deviation dep
 epochs to top10 0.8 is reduced by 40% (14 to 10)
 epochs to top10 0.96 reduced by 75%   (60 to 15)
 
+LOSS FUNCTION COMPARISON (full tomo inference, not patch metrics)
+
+fuzzy α=2,β=4: 0.918 F2 @ epoch15 → 0.926 F2 @ epoch28 (best.pt)
+  - only 2 checkpoints so degradation curve unclear
+  - high threshold (0.63→0.37) suggests confident peaks
+
+combined α=2,β=6: 0.900 @ epoch15 → 0.926 @ epoch25 → 0.784 @ epoch35 → 0.769 @ epoch45
+  - matches fuzzy peak F2, degrades slower than β=4
+  - higher optimal threshold (0.61) = more confident peaks
+  - β=6 better than β=4 because soft gating needs more aggressive falloff to mimic piecewise threshold
+
+combined α=2,β=4: 0.755 @ epoch15 → 0.926 @ epoch30 → 0.763 @ epoch35
+  - sharp degradation after peak, β too low
+
+adapted cornernet: 0.816 @ epoch15 → 0.660 @ epoch26
+  - severe patch overfitting, bad
+
+regression cornernet: 0.804 F2 peak
+  - log(1-error) instead of log(pred) for pos case
+  - underperforms probably because gradient signal too weak
+  - (target-pred) focal term already bounds the target, log(1-error) is redundant
+
+best performers: fuzzy α=2,β=4, combined α=2,β=6 (both hit 0.926 peak)
+need full degradation sweep on fuzzy to compare stability
 
 
 
@@ -88,3 +112,15 @@ epochs to top10 0.96 reduced by 75%   (60 to 15)
 
 to test: generate blobs similar to the maxpooling approach (if near an edge in DS space then that neighboring voxel gets super high weigting maxpool like behavior)
 hopefully though there is an easy way to do this without resorting to maxpooling retarded shit so
+use 0.75 cornernet threshold, angstrom sigma 250, 
+
+position (x), dist to pixel 11 center, 250 angstrom
+10.75               0.75                    0.74
+10.90               0.60                    0.83
+
+so essentially if we want multi pixel gaussians considered by cornernet loss, it needs to be about 0.7 ds_pixels away from the center of another one, or 0.2 ds_pixels away from edge
+might still be pretty conservative but this seems to be a pretty major reason why the other one learned so well (the other one used 0.9 threshold but with max pooling so math works out to about 0.1 ds_pixels in that)
+
+IF THIS IS THE TRUE MECHANIC BEHIND WHY, we find that fuzzier gaussians (more than 1 pixel) when stitched for inference outperform strictly 1x1 gaussians even when 1x1 gaussians have more overlap (0.5 vs 0.6, about 2x more inference compute)
+
+ALSO AFTER THIS LETS ADD SOME VISUALIZATION TO WHAT THE CONVERT_PT script is actually doing with the heatmap stuff so its not just a black box

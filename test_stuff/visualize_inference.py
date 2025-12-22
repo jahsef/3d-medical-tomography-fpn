@@ -13,29 +13,30 @@ from model_defs.motor_detector import MotorDetector
 from train.utils import get_tomo_folds, load_ground_truth
 
 # Configuration
-device = torch.device('cuda')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_data\parallel_fpn_cornernet_fold0\weights\best.pt'
+device = torch.device('cpu')
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_labels\parallel_fpn_combined_a2b6_fold0\weights\epoch45.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 
 batch_size = 6
 patch_size = (160, 288, 288)
-overlap = 0.6
+overlap = 0.5
 sigma_scale = 1/8
 downsampling_factor = 16
+dtype = torch.float32  # Use float32 for CPU compatibility
 
 # Fold-based filtering
 VIS_FOLDS = [0]
 tomo_folds = get_tomo_folds()
 vis_id_list = [tomo_id for tomo_id, fold in tomo_folds.items() if fold in VIS_FOLDS]
-# vis_id_list = vis_id_list[::5]
-vis_id_list = ['tomo_00e047']
+vis_id_list = vis_id_list[::5]
+# vis_id_list = ['tomo_00e047']
 
 print(f'possible samples to inference: {len(vis_id_list)}')
 
 def normalize_tomogram(tomo_array):
-    """Normalize tomogram: convert to float16, scale to [0,1], then standardize."""
-    tomo_normalized = tomo_array.astype(np.float16) / 255.0
+    """Normalize tomogram: scale to [0,1], then standardize."""
+    tomo_normalized = tomo_array.astype(np.float32) / 255.0
     tomo_normalized = (tomo_normalized - 0.479915) / 0.224932
     return tomo_normalized
 
@@ -184,7 +185,7 @@ def run_automated_visualization():
     """Main function to run automated tomogram visualization."""
     # Load model
     detector, _ = MotorDetector.load_checkpoint(model_path)
-    detector = detector.to(device)
+    detector = detector.to(device).to(dtype)
     detector.eval()
 
     # Load ground truth (coords in downsampled space)
@@ -215,11 +216,11 @@ def run_automated_visualization():
 
         # Prepare for inference
         original_shape = tomo.shape
-        tomo_batch = tomo.reshape(1, 1, *original_shape).to(device)
+        tomo_batch = tomo.reshape(1, 1, *original_shape).to(device).to(dtype)
 
         # Run inference
         print("Running inference...")
-        results = detector.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale, dtype=torch.float16)
+        results = detector.inference(tomo_batch, batch_size=batch_size, patch_size=patch_size, overlap=overlap, device=device, tqdm_progress=True, sigma_scale=sigma_scale, dtype=dtype)
         heatmap = results.view(results.shape[2:]).cpu().numpy()
 
         print(f"Heatmap shape: {heatmap.shape}")

@@ -20,7 +20,7 @@ tomo_folds = get_tomo_folds()
 # Config
 VIS_FOLDS = [0]
 
-master_tomo_path = Path.cwd() / 'data/processed/old_data_300sigma'
+master_tomo_path = Path.cwd() / 'data/processed/old_labels'
 tomo_list = [dir for dir in master_tomo_path.iterdir() if dir.is_dir() and tomo_folds[dir.name] in VIS_FOLDS]
 
 patch_files = []
@@ -33,7 +33,7 @@ print(f'Total tomos in folds {VIS_FOLDS}: {len(tomo_list)}')
 
 
 
-checkpoint = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_data_300sigma/parallel_fpn_cornernet_fold0/weights/best.pt'
+checkpoint = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_labels/parallel_fpn_cornernet_fold0_2/weights/best.pt'
 device = torch.device('cpu')
 model, _ = MotorDetector.load_checkpoint(checkpoint)
 model = model.to(device)

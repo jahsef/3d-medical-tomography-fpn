@@ -1,0 +1,12 @@
+Model: parallel_fpn_combined_fold0_2
+Weights: epoch15.pt
+
+Best F2 scores by prune radius:
+  r=0: F2=0.7000 @ thresh=0.59 (P=0.700, R=0.700)
+  r=1: F2=0.7550 @ thresh=0.37 (P=0.615, R=0.800)
+  r=2: F2=0.7550 @ thresh=0.37 (P=0.615, R=0.800)
+  r=3: F2=0.7550 @ thresh=0.37 (P=0.615, R=0.800)
+  r=4: F2=0.7550 @ thresh=0.37 (P=0.615, R=0.800)
+  r=5: F2=0.7550 @ thresh=0.37 (P=0.615, R=0.800)
+
+Overall best: F2=0.7550 @ r=1, thresh=0.37

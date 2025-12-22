@@ -29,14 +29,15 @@ logging.basicConfig(level=logging.WARNING,
 
 
 # Configuration Parameters
-MODEL_DIR = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_data_300sigma\parallel_fpn_cornernet_fold0')
-WEIGHT_FILE = 'best.pt'  # 'best.pt' or 'epoch0.pt'
+MODEL_DIR = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_labels\parallel_fpn_combined_a2b6_fold0')
+
+WEIGHT_FILE = 'epoch45.pt'  # 'best.pt' or 'epoch0.pt'
 MODEL_PATH = MODEL_DIR / 'weights' / WEIGHT_FILE
 print(f"loading from: {MODEL_PATH}")
 MASTER_TOMO_PATH = Path.cwd() / 'data/original_data/train'
 GROUND_TRUTH_CSV = r'.\data\original_data\train_labels.csv'
 OUTPUT_DIR = MODEL_DIR / 'inference_results'
-OUTPUT_CSV_NAME = 'results.csv'
+OUTPUT_FILENAME = Path(WEIGHT_FILE).stem
 
 #60,30,10,2,1
 #60:1
@@ -336,7 +337,15 @@ def main():
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     results_df = pd.DataFrame(results_data)
-    results_df.to_csv(OUTPUT_DIR / OUTPUT_CSV_NAME, index=False)
+
+    # Find available filename (results.csv, results(1).csv, etc.)
+    csv_path = OUTPUT_DIR / f'{OUTPUT_FILENAME}.csv'
+    counter = 1
+    while csv_path.exists():
+        csv_path = OUTPUT_DIR / f'{OUTPUT_FILENAME}({counter}).csv'
+        counter += 1
+
+    results_df.to_csv(csv_path, index=False)
 
     # Build best results summary
     f_col = f'f_{BETA}'
@@ -358,7 +367,8 @@ def main():
     summary_text = "\n".join(summary_lines)
     print(f"\n{summary_text}")
 
-    with open(OUTPUT_DIR / 'best_results.txt', 'w') as f:
+    txt_path = csv_path.with_suffix('.txt')
+    with open(txt_path, 'w') as f:
         f.write(summary_text)
 
     # Cleanup

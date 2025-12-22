@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(dir \"C:\\\\Users\\\\kevin\\\\Documents\\\\GitHub\\\\kaggle-byu-bacteria-motor-comp\\\\models\")",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

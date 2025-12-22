@@ -115,5 +115,5 @@ class PatchViewer:
 
     
 if __name__ == '__main__':
-    patches_dir = Path('data/processed/old_data')
+    patches_dir = Path('data/processed/old_labels')
     PatchViewer(patches_dir)
