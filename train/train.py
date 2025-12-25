@@ -43,28 +43,28 @@ if __name__ == "__main__":
         'drop_path_p': 0.0,
         
         # Training
-        'epochs': 69,
-        'lr': 2e-4,
-        'batch_size': 1,
-        'batches_per_step': 5,
+        'epochs': 25,
+        'lr': 5e-4,
+        'batch_size': 2,
+        'batches_per_step': 3,
         
         # Model
-        'model_name': 'parallel_fpn',  # 'simple_unet', 'parallel_fpn', 'cascade_fpn'
+        'model_name': 'backbone_only',  # 'simple_unet', 'parallel_fpn', 'cascade_fpn'
         'model_size': '4m',  # depends on model_name
          
         # Data
         'train_folds': [0],
         'val_folds' :[],
-        'dataset_path':Path('./data/processed/old_labels/'),
+        'dataset_path':Path('./data/processed/old_labels_r1p1o5/'),
         'labels_path' :Path('./data/original_data/train_labels.csv'),
         
         # Loss
-        'loss_function': 'bcefocal',  # 'bce', 'mse', 'bcefocal', 'weightedbce', 'adaptedcornernet', 'fuzzycornernet'
+        'loss_function': 'combined',  # 'bce', 'mse', 'bcefocal', 'weightedbce', 'adaptedcornernet', 'fuzzycornernet'
         'pos_weight':10,#for weighted bce
         'gamma': 2,  # For focal loss
         
         'alpha': 2.0,  # cornernet focal power for hard examples
-        'beta': 4.0,   # cornernet background suppression near peaks
+        'beta': 6.0,   # cornernet background suppression near peaks
         'pos_threshold':0.65, # cornernet adapted for true continuous targets, threshold to swap to pos loss
         
         # Optimizer
@@ -80,7 +80,7 @@ if __name__ == "__main__":
         'prefetch_factor': None,
         
         # Paths
-        'save_dir': './models/old_labels/parallel_fpn_bcefocal_g2_fold0',  
+        'save_dir': './models/architecture_ablation/backbone_4m_combined_a2b6_fold0',  
         'exist_ok':False,
         
         # Other
@@ -237,7 +237,7 @@ if __name__ == "__main__":
     batch_size = CONFIG['batch_size']
     batches_per_step = CONFIG['batches_per_step']
 
-    print(f'TOTAL EXPECTED PATCHES TRAINED: {batch_size*len(train_dataset)*epochs}')
+    print(f'TOTAL EXPECTED PATCHES TRAINED: {len(train_dataset)*epochs}')
     
     total_steps = epochs * math.ceil(len(train_dataset) / batch_size / batches_per_step)
     warmup_steps = int(CONFIG['warmup_ratio'] * total_steps)

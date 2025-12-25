@@ -14,7 +14,7 @@ from train.utils import get_tomo_folds, load_ground_truth
 
 # Configuration
 device = torch.device('cpu')
-model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_labels\parallel_fpn_combined_a2b6_fold0\weights\epoch45.pt'
+model_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\architecture_ablation\backbone_4m_combined_a2b6_fold0\weights\best.pt'
 labels_path = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train_labels.csv'
 original_data_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\original_data\train')
 

@@ -4,7 +4,8 @@
       "Bash(python:*)",
       "Bash(mv:*)",
       "Bash(dir \"C:\\\\Users\\\\kevin\\\\Documents\\\\GitHub\\\\kaggle-byu-bacteria-motor-comp\\\\models\")",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []

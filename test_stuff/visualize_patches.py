@@ -3,8 +3,6 @@ import torch
 import matplotlib.pyplot as plt
 from natsort import natsorted
 
-DOWNSAMPLING_FACTOR = 16
-
 
 def get_initial_slice(gaussian: torch.Tensor) -> int:
     """Return first peak depth if gaussian has label, else center (in downsampled space)."""
@@ -27,6 +25,12 @@ def load_patch(patch_path: Path) -> dict:
         'patch': data['patch'],
         'gaussian': data['gaussian'].squeeze(),
         'patch_type': data['patch_type'],
+        'local_rs_coords': data['local_rs_coords'],
+        'local_ds_coords': data['local_ds_coords'],
+        'ds_factor': data['ds_factor'],
+        'ds_sigma': data['ds_sigma'],
+        'angstrom_sigma': data['angstrom_sigma'],
+        'voxel_spacing': data['voxel_spacing'],
     }
 
 
@@ -56,9 +60,10 @@ class PatchViewer:
         patch = info['patch']
         gaussian = info['gaussian']
         patch_origin = info['coords']
+        ds_factor = info['ds_factor']
 
         # Convert downsampled slice to real space (center of downsampled voxel)
-        real_slice_idx = self.slice_idx * DOWNSAMPLING_FACTOR + DOWNSAMPLING_FACTOR // 2
+        real_slice_idx = self.slice_idx * ds_factor + ds_factor // 2
         real_slice_idx = min(real_slice_idx, patch.shape[0] - 1)
 
         self.axes[0].clear()
@@ -71,26 +76,23 @@ class PatchViewer:
         self.axes[1].set_title('Label (Gaussian)')
         self.axes[1].axis('off')
 
-        # Find gaussian peaks (conf == 1) and convert to real space
-        peak_indices = (gaussian == 1).nonzero()
-        if len(peak_indices) > 0:
-            peak_coords_str = ", ".join([
-                f"({patch_origin[0] + int(p[0]) * DOWNSAMPLING_FACTOR}, "
-                f"{patch_origin[1] + int(p[1]) * DOWNSAMPLING_FACTOR}, "
-                f"{patch_origin[2] + int(p[2]) * DOWNSAMPLING_FACTOR})"
-                for p in peak_indices
-            ])
-            motor_info = f"Motors: {peak_coords_str}"
+        # Display motor coords from metadata
+        local_rs_coords = info['local_rs_coords']
+        local_ds_coords = info['local_ds_coords']
+        if local_rs_coords.shape[0] > 0:
+            motor_info = f"Motors (local_rs): {local_rs_coords.tolist()}"
+            motor_ds_info = f"Motors (local_ds): {[[f'{c:.2f}' for c in coord] for coord in local_ds_coords.tolist()]}"
         else:
             motor_info = "No motor"
+            motor_ds_info = ""
 
         # Real depth = patch_origin_z + ds_slice * factor
-        real_depth = patch_origin[0] + self.slice_idx * DOWNSAMPLING_FACTOR
+        real_depth = patch_origin[0] + self.slice_idx * ds_factor
 
-        title = f"{info['tomo_id']} | origin=({patch_origin[0]}, {patch_origin[1]}, {patch_origin[2]}) | {info['patch_type']}"
+        title = f"{info['tomo_id']} | origin={patch_origin} | {info['patch_type']}"
         subtitle = f"Patch {self.patch_idx + 1}/{len(self.patch_files)} | DS Slice {self.slice_idx + 1}/{gaussian.shape[0]} | Real Depth: {real_depth}"
-        motor_line = motor_info
-        self.fig.suptitle(f"{title}\n{subtitle}\n{motor_line}")
+        metadata = f"ds_factor={ds_factor} | ds_sigma={info['ds_sigma']:.3f} | voxel_spacing={info['voxel_spacing']}"
+        self.fig.suptitle(f"{title}\n{subtitle}\n{motor_info}\n{motor_ds_info}\n{metadata}")
 
         self.fig.canvas.draw_idle()
 
@@ -115,5 +117,5 @@ class PatchViewer:
 
     
 if __name__ == '__main__':
-    patches_dir = Path('data/processed/old_labels')
+    patches_dir = Path('data/processed/old_labels_r1p1o5')
     PatchViewer(patches_dir)

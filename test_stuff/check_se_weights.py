@@ -1,7 +1,7 @@
 import torch
 
-EPOCH0 = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\pc_fpn_cornernet4\weights\epoch0.pt'
-BEST = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\pc_fpn_cornernet4\weights\best.pt'
+EPOCH0 = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\loss_ablation\combined_a2b6_fold0\weights\epoch0.pt'
+BEST = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\loss_ablation\combined_a2b6_fold0\weights\best.pt'
 
 print("Loading checkpoints...")
 e0_ckpt = torch.load(EPOCH0, map_location='cpu')['weights']
@@ -9,9 +9,9 @@ best_ckpt = torch.load(BEST, map_location='cpu')['weights']
 
 # SE block keys in head: head.2.fc.0.weight, head.2.fc.2.weight, head.2.fc.2.bias
 se_keys = [
-    ("parallel_neck.1.fc.0.weight", "compression conv"),
-    ("parallel_neck.1.fc.2.weight", "expansion conv"),
-    ("parallel_neck.1.fc.2.bias", "expansion bias"),
+    ("head.2.fc.0.weight", "compression conv"),
+    ("head.2.fc.2.weight", "expansion conv"),
+    ("head.2.fc.2.bias", "expansion bias"),
 ]
 
 print("\n" + "="*60)

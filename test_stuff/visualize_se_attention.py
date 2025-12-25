@@ -11,21 +11,22 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-from sklearn.model_selection import train_test_split
 import random
 from model_defs.motor_detector import MotorDetector
+from train.utils import get_tomo_folds
 from tqdm import tqdm
 
 
-DEFAULT_CHECKPOINT = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\fpn_comparison\pc_fpn_cornernet4\weights\best.pt'
-master_tomo_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\processed\patch_pt_data')
+DEFAULT_CHECKPOINT = r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\loss_ablation\combined_a2b6_fold0\weights\best.pt'
+master_tomo_path = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\data\processed\old_labels')
 
-N_SAMPLES = 6
+N_SAMPLES = 64
+INFERENCE_FOLDS = [0]
 
 
 def main():
     checkpoint_path = DEFAULT_CHECKPOINT
-    device = torch.device('cpu')
+    device = torch.device('cuda')
 
     print(f'Loading model from: {checkpoint_path}')
     detector, _ = MotorDetector.load_checkpoint(checkpoint_path, dropout_p=0, drop_path_p=0)
@@ -33,14 +34,12 @@ def main():
     model = detector.model.to(device)
 
     # Get SE block
-    se_block = model.parallel_neck[1]
+    se_block = model.interp_r_2[2]
     n_channels = se_block.fc[0].in_channels
     print(f'SE block: {n_channels} channels')
-    
-    
-    tomo_id_list = [dir.name for dir in master_tomo_path.iterdir() if dir.is_dir()]
-    train_id_list, val_id_list = train_test_split(tomo_id_list, train_size=0.25, random_state=42)
-    val_id_list = train_id_list
+
+    tomo_folds = get_tomo_folds()
+    val_id_list = [tomo_id for tomo_id, fold in tomo_folds.items() if fold in INFERENCE_FOLDS]
     
 
     all_patches = []
@@ -69,7 +68,7 @@ def main():
     print('Running forward passes...')
     with torch.no_grad():
         for i, patch_path in tqdm(enumerate(sampled_patches)):
-            patch = torch.load(patch_path)['patch'].unsqueeze(0).float().to(device) #already chw, => bchw
+            patch = torch.load(patch_path)['patch'].unsqueeze(0).unsqueeze(0).float().to(device)  # DHW -> BCDHW
             _ = model(patch)
 
     handle.remove()

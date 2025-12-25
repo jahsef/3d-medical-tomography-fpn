@@ -29,15 +29,14 @@ logging.basicConfig(level=logging.WARNING,
 
 
 # Configuration Parameters
-MODEL_DIR = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\old_labels\parallel_fpn_combined_a2b6_fold0')
+MODEL_DIR = Path(r'C:\Users\kevin\Documents\GitHub\kaggle-byu-bacteria-motor-comp\models\architecture_ablation\parallel_4m_combined_a2b6_fold0')
 
-WEIGHT_FILE = 'epoch45.pt'  # 'best.pt' or 'epoch0.pt'
+WEIGHT_FILE = 'epoch24.pt'  # 'best.pt' or 'epoch0.pt'
 MODEL_PATH = MODEL_DIR / 'weights' / WEIGHT_FILE
 print(f"loading from: {MODEL_PATH}")
 MASTER_TOMO_PATH = Path.cwd() / 'data/original_data/train'
 GROUND_TRUTH_CSV = r'.\data\original_data\train_labels.csv'
 OUTPUT_DIR = MODEL_DIR / 'inference_results'
-OUTPUT_FILENAME = Path(WEIGHT_FILE).stem
 
 #60,30,10,2,1
 #60:1
@@ -46,6 +45,8 @@ OUTPUT_FILENAME = Path(WEIGHT_FILE).stem
 
 # Dataset Split Configuration
 INFERENCE_FOLDS = [0]
+fold_str = ''.join(str(f) for f in sorted(INFERENCE_FOLDS))
+OUTPUT_FILENAME = f"{Path(WEIGHT_FILE).stem}_fold_{fold_str}"
 tomo_folds = get_tomo_folds()
 val_id_list = [tomo_id for tomo_id, fold in tomo_folds.items() if fold in INFERENCE_FOLDS] 
 val_id_list = val_id_list[::5]
@@ -65,6 +66,9 @@ PRUNING_RADII = [0,1,2,3,4,5]
 
 CONF_THRESHOLDS = np.arange(0.05, 0.95, 0.02)
 BETA = 2
+
+# Prediction offset: 0.5 to report voxel centers (matches training with gaussian_offset=0.5)
+PREDICTION_OFFSET = 0.5
 
 # Optimization Parameters
 NUM_LOADING_THREADS = min(12, mp.cpu_count())
@@ -168,12 +172,12 @@ def prune_nearby_predictions_fast(heatmap: np.ndarray, r=16, min_thresh=0.55):
     return kept_predictions
 
 
-def hungarian_matching(predictions, ground_truth, threshold_voxels):
+def hungarian_matching(predictions, ground_truth, threshold_voxels, prediction_offset):
     """Hungarian matching with threshold."""
     if len(predictions) == 0 or len(ground_truth) == 0:
         return len(predictions), len(ground_truth)
-    
-    pred_array = np.array(predictions)
+
+    pred_array = np.array(predictions) + prediction_offset
     gt_array = np.array(ground_truth)
     distances = np.linalg.norm(pred_array[:, None, :] - gt_array[None, :, :], axis=2)
     pred_indices, gt_indices = linear_sum_assignment(distances)
@@ -263,7 +267,7 @@ def hungarian_thread(hungarian_queue, final_metrics, metrics_lock, pbar):
 
         with metrics_lock:
             for (radius, conf_thresh), predictions in all_results.items():
-                fp, fn = hungarian_matching(predictions, gt_motors, THRESHOLD_VOXELS)
+                fp, fn = hungarian_matching(predictions, gt_motors, THRESHOLD_VOXELS, PREDICTION_OFFSET)
                 tp = len(predictions) - fp
 
                 key = (radius, conf_thresh)

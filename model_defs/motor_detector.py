@@ -1,18 +1,34 @@
-from .model_defs import cascade_fpn, parallel_fpn, simple_unet, pc_fpn
+from .model_defs import cascade_fpn, parallel_fpn, simple_unet, pc_fpn, nose_parallel_fpn, backbone_only
 
 import torch
 import monai
 import gc
 import monai.inferers#we do need this but why? im nto sure maybe some weird python quirk
 PRESETS = {
+    # Simple architectures
     "simple_unet": {
         "4m": {"base_features":5, "growth_rate": 2} ,
         "10m":  {"base_features":8, "growth_rate": 2}
     },
+    "backbone_only": {
+        "3m": {"base_features": 4, "growth_rate": 2.52},
+        "4m": {"base_features": 5, "growth_rate": 2.47}
+    },
+
+    # Parallel FPN variants
     "parallel_fpn": {
         "4m" : {"base_features":4, "growth_rate" : 2.3, "downchanneling_factor" : 2 },
         "10m" : {"base_features":6, "growth_rate" : 2.3, "downchanneling_factor" : 2 }
     },
+    "parallel_fpn_light": {
+        "4m" : {"base_features":4, "growth_rate" : 2.3, "downchanneling_factor" : 2 },
+    },
+    "nose_parallel_fpn": {
+        "4m" : {"base_features":4, "growth_rate" : 2.3, "downchanneling_factor" : 2 },
+        "10m" : {"base_features":6, "growth_rate" : 2.3, "downchanneling_factor" : 2 }
+    },
+
+    # Other FPN variants
     "cascade_fpn": {
         "4m" : {"base_features":4, "growth_rate" : 2.3, "downchanneling_factor" : 2 }
     },
@@ -23,16 +39,37 @@ PRESETS = {
 
 def _load_preset(model_name, model_size, dropout_p, drop_path_p):
     preset = None
+
+    # Simple architectures
     if model_name == 'simple_unet':
         preset = PRESETS['simple_unet'].get(model_size, None)
         if preset is None:
             raise Exception(f"model: {model_name} does not have preset: {model_size}\nExisting Presets: {PRESETS['simple_unet']}")
         model = simple_unet.SimpleUNET(**preset, dropout_p=dropout_p, drop_path_p=drop_path_p)
+    elif model_name == 'backbone_only':
+        preset = PRESETS['backbone_only'].get(model_size, None)
+        if preset is None:
+            raise Exception(f"model: {model_name} does not have preset: {model_size}\nExisting Presets: {PRESETS['backbone_only']}")
+        model = backbone_only.BackboneOnly(**preset, dropout_p=dropout_p, drop_path_p=drop_path_p)
+
+    # Parallel FPN variants
     elif model_name == 'parallel_fpn':
         preset = PRESETS['parallel_fpn'].get(model_size, None)
         if preset is None:
             raise Exception(f"model: {model_name} does not have preset: {model_size}\nExisting Presets: {PRESETS['parallel_fpn']}")
         model = parallel_fpn.ParallelFPN(**preset, dropout_p=dropout_p, drop_path_p=drop_path_p)
+    elif model_name == 'parallel_fpn_light':
+        preset = PRESETS['parallel_fpn_light'].get(model_size, None)
+        if preset is None:
+            raise Exception(f"model: {model_name} does not have preset: {model_size}\nExisting Presets: {PRESETS['parallel_fpn_light']}")
+        model = parallel_fpn.ParallelFPNLightHead(**preset, dropout_p=dropout_p, drop_path_p=drop_path_p)
+    elif model_name == 'nose_parallel_fpn':
+        preset = PRESETS['nose_parallel_fpn'].get(model_size, None)
+        if preset is None:
+            raise Exception(f"model: {model_name} does not have preset: {model_size}\nExisting Presets: {PRESETS['nose_parallel_fpn']}")
+        model = nose_parallel_fpn.NoSEParallelFPN(**preset, dropout_p=dropout_p, drop_path_p=drop_path_p)
+
+    # Other FPN variants
     elif model_name == 'cascade_fpn':
         preset = PRESETS['cascade_fpn'].get(model_size, None)
         if preset is None:
@@ -43,6 +80,7 @@ def _load_preset(model_name, model_size, dropout_p, drop_path_p):
         if preset is None:
             raise Exception(f"model: {model_name} does not have preset: {model_size}\nExisting Presets: {PRESETS['pc_fpn']}")
         model = pc_fpn.PCFPN(**preset, dropout_p=dropout_p, drop_path_p=drop_path_p)
+
     else:
         raise Exception(f"Unknown model: {model_name}\nAvailable models: {list(PRESETS.keys())}")
     return model, preset

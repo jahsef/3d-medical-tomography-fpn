@@ -282,6 +282,9 @@ def save_patches_placeholder(
     angstrom_sigma:float,
     patch_size:tuple,
     visualize: bool,
+    gaussian_offset: float,
+    erosion_radius: int,
+    erosion_padding: float,
 ) -> None:
     """Placeholder for actual patch saving logic."""
     tomo_dir = dst / tomo_dict['tomo_id']
@@ -313,7 +316,8 @@ def save_patches_placeholder(
             downsampled_patch_shape=tuple(ds_shape),
             angstrom_sigma=angstrom_sigma,
             voxel_spacing=tomo_dict['voxel_spacing'],
-            downsampling_factor=downsampling_factor
+            downsampling_factor=downsampling_factor,
+            gaussian_offset=gaussian_offset
         )
         gaussian_heatmap = torch.maximum(gaussian_heatmap, single_gaussian.float())
 
@@ -322,6 +326,7 @@ def save_patches_placeholder(
 
     t0 = time.time()
     num_motors = len(tomo_dict['motors'])
+    voxel_spacing = tomo_dict['voxel_spacing']
     multi_motor_samples = data_split_dict['single_motor_samples'] * (num_motors // 2)
     successful_multi_motors = _multi_motor_save(multi_motor_samples=multi_motor_samples,
                                                     tomo_dict=tomo_dict, tomo_dir=tomo_dir,
@@ -329,7 +334,11 @@ def save_patches_placeholder(
                                                     valid_bounds_mask=valid_bounds_mask,
                                                     downsampling_factor=downsampling_factor,
                                                     gaussian_heatmap=gaussian_heatmap,
-                                                    patch_size=patch_size_arr)
+                                                    patch_size=patch_size_arr,
+                                                    angstrom_sigma=angstrom_sigma,
+                                                    voxel_spacing=voxel_spacing,
+                                                    erosion_radius=erosion_radius,
+                                                    erosion_padding=erosion_padding)
     multi_time = time.time() - t0
 
     t0 = time.time()
@@ -339,7 +348,11 @@ def save_patches_placeholder(
                                                 valid_bounds_mask=valid_bounds_mask,
                                                 downsampling_factor=downsampling_factor,
                                                 gaussian_heatmap=gaussian_heatmap,
-                                                patch_size=patch_size_arr)
+                                                patch_size=patch_size_arr,
+                                                angstrom_sigma=angstrom_sigma,
+                                                voxel_spacing=voxel_spacing,
+                                                erosion_radius=erosion_radius,
+                                                erosion_padding=erosion_padding)
     single_time = time.time() - t0
 
     t0 = time.time()
@@ -349,7 +362,9 @@ def save_patches_placeholder(
                                                 valid_bounds_mask=valid_bounds_mask,
                                                 downsampling_factor=downsampling_factor,
                                                 gaussian_heatmap=gaussian_heatmap,
-                                                patch_size=patch_size_arr)
+                                                patch_size=patch_size_arr,
+                                                angstrom_sigma=angstrom_sigma,
+                                                voxel_spacing=voxel_spacing)
     hard_neg_time = time.time() - t0
 
     t0 = time.time()
@@ -359,7 +374,9 @@ def save_patches_placeholder(
                                                 valid_bounds_mask=valid_bounds_mask,
                                                 downsampling_factor=downsampling_factor,
                                                 gaussian_heatmap=gaussian_heatmap,
-                                                patch_size=patch_size_arr)
+                                                patch_size=patch_size_arr,
+                                                angstrom_sigma=angstrom_sigma,
+                                                voxel_spacing=voxel_spacing)
     random_neg_time = time.time() - t0
 
     total_time = time.time() - total_start
@@ -376,18 +393,19 @@ def save_patches_placeholder(
         visualize_availability_heatmap(tomo_array, availability_mask, gaussian_heatmap, tomo_id, downsampling_factor, ds_patch_size)
 
 
-def generate_gaussian_label(downsampled_local_motor_coords, downsampled_patch_shape, angstrom_sigma, voxel_spacing, downsampling_factor):
+def generate_gaussian_label(downsampled_local_motor_coords, downsampled_patch_shape, angstrom_sigma, voxel_spacing, downsampling_factor, gaussian_offset):
     # sigma in downsampled space = angstrom_sigma / voxel_spacing / downsampling_factor
     ds_pixel_sigma = angstrom_sigma / voxel_spacing / downsampling_factor
-
+    
     label_d, label_h, label_w = downsampled_local_motor_coords
-    grid_d = torch.arange(downsampled_patch_shape[0])[:, None, None]
-    grid_h = torch.arange(downsampled_patch_shape[1])[None, :, None]
-    grid_w = torch.arange(downsampled_patch_shape[2])[None, None, :]
+    # gaussian_offset: 0.5 = distance to voxel centers, 0.0 = distance to voxel corners
+    grid_d = torch.arange(downsampled_patch_shape[0])[:, None, None] + gaussian_offset
+    grid_h = torch.arange(downsampled_patch_shape[1])[None, :, None] + gaussian_offset
+    grid_w = torch.arange(downsampled_patch_shape[2])[None, None, :] + gaussian_offset
     dist_sq = (grid_d-label_d)**2 + (grid_h-label_h)**2 + (grid_w-label_w)**2
     gaussian_blob = torch.exp(-dist_sq/(2*ds_pixel_sigma**2)).to(torch.float16)
     return gaussian_blob
-
+    
 
 def _save_patch(
     tomo_array: np.ndarray,
@@ -397,7 +415,9 @@ def _save_patch(
     patch_size: np.ndarray,
     downsampling_factor: int,
     patch_type: str,
-    tomo_dir: Path
+    tomo_dir: Path,
+    angstrom_sigma: float,
+    voxel_spacing: float
 ) -> None:
     """Extract patch and gaussian crop, validate motor count, and save."""
     # Extract patch from tomo_array
@@ -417,6 +437,19 @@ def _save_patch(
     ]
     num_motors = len(motors_in_patch)
 
+    # Compute local coords for subvoxel augmentations (N, 3) tensors
+    if num_motors > 0:
+        local_rs_coords = torch.tensor([[m[0] - patch_origin[0], m[1] - patch_origin[1], m[2] - patch_origin[2]]
+                                        for m in motors_in_patch], dtype=torch.int32)
+        local_ds_coords = torch.tensor([[(m[0] - patch_origin[0]) / downsampling_factor,
+                                         (m[1] - patch_origin[1]) / downsampling_factor,
+                                         (m[2] - patch_origin[2]) / downsampling_factor]
+                                        for m in motors_in_patch], dtype=torch.float32)
+    else:
+        local_rs_coords = torch.empty((0, 3), dtype=torch.int32)
+        local_ds_coords = torch.empty((0, 3), dtype=torch.float32)
+    ds_sigma = angstrom_sigma / voxel_spacing / downsampling_factor
+
     _log(f'_save_patch: type={patch_type}, origin={patch_origin}, end={patch_end}, '
          f'ds_origin={ds_origin}, num_motors={num_motors}, motors_in_patch={motors_in_patch}', 'DEBUG', True)
 
@@ -432,7 +465,13 @@ def _save_patch(
         obj={
             'patch': torch.from_numpy(patch.copy()),
             'gaussian': gaussian.clone().to(torch.float16),
-            'patch_type': patch_type
+            'patch_type': patch_type,
+            'local_rs_coords': local_rs_coords,
+            'local_ds_coords': local_ds_coords,
+            'ds_factor': downsampling_factor,
+            'ds_sigma': ds_sigma,
+            'angstrom_sigma': angstrom_sigma,
+            'voxel_spacing': voxel_spacing,
         },
         f=tomo_dir / f'patch_{patch_origin[0]}_{patch_origin[1]}_{patch_origin[2]}.pt'
     )
@@ -446,13 +485,17 @@ def _multi_motor_save(
     valid_bounds_mask: np.ndarray,
     downsampling_factor: int,
     gaussian_heatmap: torch.Tensor,
-    patch_size: np.ndarray) -> int:
+    patch_size: np.ndarray,
+    angstrom_sigma: float,
+    voxel_spacing: float,
+    erosion_radius: int,
+    erosion_padding: float) -> int:
 
     motors = tomo_dict['motors']
     tomo_array = tomo_dict['tomo_array']
     tomo_shape = np.array(tomo_array.shape)
     downsampled_patch_shape = patch_size // downsampling_factor
-
+    
     ### FIND VALID RANGES FOR MULTI MOTORS (all in downsampled space)
     for i, motor_idx_tuple_i in enumerate(motors):
         ds_motor_i = np.asarray(motor_idx_tuple_i) // downsampling_factor
@@ -475,19 +518,17 @@ def _multi_motor_save(
             availability_mask[0, lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] = 1
 
     # Erode locally for sampling - keeps availability_mask[0] as pre-erosion for exclusion later
-    # Radius=2 because: (1) gaussian uses float ds coords which can be up to 0.99 voxels past int coords,
-    # (2) matches old sampling strategy (~0.8*patch_size radius from center constraint)
-    eroded_multi = _apply_erosion(availability_mask[0], radius=2) & valid_bounds_mask
-    
+    eroded_multi = _apply_erosion(availability_mask[0], erosion_radius, erosion_padding) & valid_bounds_mask
+
     saved_patches = 0
     for downsampled_idx in random_sample_indices(eroded_multi, multi_motor_samples):
         patch_origin = downsampled_to_real_idx(downsampled_idx, downsampling_factor, tomo_shape, patch_size)
 
-        _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "multi_motor", tomo_dir)
+        _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "multi_motor", tomo_dir, angstrom_sigma, voxel_spacing)
         saved_patches += 1
 
     return saved_patches
-        
+
 
 
 def _single_motor_save(
@@ -498,7 +539,11 @@ def _single_motor_save(
     valid_bounds_mask: np.ndarray,
     downsampling_factor: int,
     gaussian_heatmap: torch.Tensor,
-    patch_size: np.ndarray) -> int:
+    patch_size: np.ndarray,
+    angstrom_sigma: float,
+    voxel_spacing: float,
+    erosion_radius: int,
+    erosion_padding: float) -> int:
 
     motors = tomo_dict['motors']
     tomo_array = tomo_dict['tomo_array']
@@ -511,7 +556,7 @@ def _single_motor_save(
     for motor_idx_tuple in motors:
         ds_motor = np.array(motor_idx_tuple) // downsampling_factor
         ds_start = ds_motor - downsampled_patch_size + 1
-        ds_end = ds_motor + 1
+        ds_end = ds_motor + 1  # +1 for exclusive slicing
         ds_start = np.maximum(ds_start, 0)
         _log(f'_single_motor_save: motor={motor_idx_tuple}, ds_motor={ds_motor}, marking ds_start={ds_start}, ds_end={ds_end}', 'DEBUG', True)
         availability_mask[1, ds_start[0]:ds_end[0], ds_start[1]:ds_end[1], ds_start[2]:ds_end[2]] = 1
@@ -522,13 +567,9 @@ def _single_motor_save(
     dilated_multi = _apply_dilation(availability_mask[0], radius=1)
 
     # Erosion on local copy only - don't mutate availability_mask[1] (needed for hard_neg exclusion)
-    # Radius=2 because: (1) gaussian uses float ds coords which can be up to 0.99 voxels past int coords,
-    # (2) matches old sampling strategy (~0.8*patch_size radius from center constraint)
     local_motor_mask = availability_mask[1].copy()
-    local_motor_mask = _apply_erosion(local_motor_mask, radius=2)
-    #apply erosion then & not dilated multi
+    local_motor_mask = _apply_erosion(local_motor_mask, erosion_radius, erosion_padding)
     local_motor_mask = local_motor_mask & ~dilated_multi & valid_bounds_mask
-
     _log(f'_single_motor_save: after erosion+exclusion local_mask_sum={local_motor_mask.sum()}', 'DEBUG', True)
 
     #global one is unmutated so that hard negative example has clean stuff to work with
@@ -541,21 +582,19 @@ def _single_motor_save(
             patch_origin = downsampled_to_real_idx(downsampled_idx, downsampling_factor, tomo_shape, patch_size)
             _log(f'_single_motor_save: ds_idx={downsampled_idx}, patch_origin={patch_origin}', 'DEBUG', True)
 
-            _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "single_motor", tomo_dir)
+            _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "single_motor", tomo_dir, angstrom_sigma, voxel_spacing)
             saved_patches += 1
 
     return saved_patches
 
 
 
-def _apply_erosion(mask: np.ndarray, radius: int) -> np.ndarray:
+def _apply_erosion(mask: np.ndarray, radius: int, padding_value: float) -> np.ndarray:
     """Erode mask by radius voxels - shrinks mask from edges.
 
     Used to ensure motors aren't at patch boundaries where gaussians would be truncated.
     Opposite of dilation: requires ALL neighbors in kernel to be True.
-    Out-of-bounds treated as False (padding=0) so volume boundary edges also erode.
-    This ensures consistent training: all motors are radius voxels from patch edge,
-    no exceptions for tomogram boundaries.
+    padding_value: 1.0 = edge voxels survive, 0.0 = edge voxels erode
     """
     kernel_size = 2 * radius + 1
     kernel_volume = kernel_size ** 3
@@ -563,7 +602,7 @@ def _apply_erosion(mask: np.ndarray, radius: int) -> np.ndarray:
     conv.weight.data.fill_(1.0)
 
     tensor = torch.from_numpy(mask.astype(np.float32)).reshape(1, 1, *mask.shape)
-    padded = F.pad(tensor, (radius,) * 6, mode='constant', value=0.0)
+    padded = F.pad(tensor, (radius,) * 6, mode='constant', value=padding_value)
     result = conv(padded) == kernel_volume  # ALL neighbors must be True
     return result.squeeze().numpy()
 
@@ -633,7 +672,9 @@ def _hard_negative_save(hard_negative_samples: float,
                         valid_bounds_mask: np.ndarray,
                         downsampling_factor: int,
                         gaussian_heatmap: torch.Tensor,
-                        patch_size: np.ndarray) -> int:
+                        patch_size: np.ndarray,
+                        angstrom_sigma: float,
+                        voxel_spacing: float) -> int:
 
     motors = tomo_dict['motors']
     tomo_array = tomo_dict['tomo_array']
@@ -664,7 +705,7 @@ def _hard_negative_save(hard_negative_samples: float,
         for downsampled_idx in random_sample_indices(hard_neg, num_samples):
             patch_origin = downsampled_to_real_idx(downsampled_idx, downsampling_factor, tomo_shape, patch_size)
 
-            _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "hard_negative", tomo_dir)
+            _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "hard_negative", tomo_dir, angstrom_sigma, voxel_spacing)
             saved_patches += 1
     return saved_patches
 
@@ -676,7 +717,9 @@ def _random_negative_save(random_negative_samples: float,
                         valid_bounds_mask: np.ndarray,
                         downsampling_factor: int,
                         gaussian_heatmap: torch.Tensor,
-                        patch_size: np.ndarray) -> int:
+                        patch_size: np.ndarray,
+                        angstrom_sigma: float,
+                        voxel_spacing: float) -> int:
     motors = tomo_dict['motors']
     tomo_array = tomo_dict['tomo_array']
     tomo_shape = np.array(tomo_array.shape)
@@ -698,10 +741,10 @@ def _random_negative_save(random_negative_samples: float,
         patch_origin = downsampled_to_real_idx(downsampled_idx, downsampling_factor, tomo_shape, patch_size)
         _log(f'random_neg patch: ds_idx={downsampled_idx}, origin={patch_origin}', 'DEBUG', True)
 
-        _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "random_negative", tomo_dir)
+        _save_patch(tomo_array, gaussian_heatmap, motors, patch_origin, patch_size, downsampling_factor, "random_negative", tomo_dir, angstrom_sigma, voxel_spacing)
         saved_patches += 1
     return saved_patches
-    
+
 
 def write_whole_directory(
     src: Path,
@@ -714,6 +757,9 @@ def write_whole_directory(
     angstrom_sigma:float,
     patch_size:tuple,
     visualize: bool,
+    gaussian_offset: float,
+    erosion_radius: int,
+    erosion_padding: float,
 ) -> None:
     """
     Docstring for write_whole_directory
@@ -767,7 +813,7 @@ def write_whole_directory(
         D, H, W = tomo_dict['tomo_array'].shape
         print(f"Processing: {tomo_dict['tomo_id']} (fold={tomo_dict['fold']}, motors={len(tomo_dict['motors'])}, shape={D}x{H}x{W}, voxel_spacing={tomo_dict['voxel_spacing']})")
 
-        save_patches_placeholder(tomo_dict, dst, data_split_dict=data_split_dict, downsampling_factor=downsampling_factor, angstrom_sigma=angstrom_sigma, patch_size=patch_size, visualize=visualize)
+        save_patches_placeholder(tomo_dict, dst, data_split_dict=data_split_dict, downsampling_factor=downsampling_factor, angstrom_sigma=angstrom_sigma, patch_size=patch_size, visualize=visualize, gaussian_offset=gaussian_offset, erosion_radius=erosion_radius, erosion_padding=erosion_padding)
         
         del tomo_dict
         gc.collect()
@@ -788,7 +834,7 @@ if __name__ == '__main__':
 # INFO: tomo_0da370 total: 2 patches in 0.15s\
 
     src_root = Path(r'data/original_data/train')
-    dst_root = Path(r'data/processed/old_labels')
+    dst_root = Path(r'data/processed/old_labels_a200_r1p1o5')
     csv_path = Path(r'data/original_data/train_labels.csv')
     data_split_dict = {
         'single_motor_samples': 15,  # per motor (also used for multi_motor: single * num_motors // 2)
@@ -797,10 +843,16 @@ if __name__ == '__main__':
     }
     
     downsampling_factor = 16
-    angstrom_sigma = 250
+    angstrom_sigma = 200
     patch_size = (160, 288, 288)
     # Note on motor detection thresholds: Using float downsampled coords means motors near
     # voxel edges have <1.0 gaussian peak. E.g. with 250 angstrom sigma and 16 voxel spacing,
     # a motor 0.2 ds voxels from edge has ~0.75 confidence (ds_pixel 10.8 gives pixel 11 ~0.75 conf).
 
-    write_whole_directory(src=src_root, dst=dst_root, csv_path=csv_path, num_workers=3, queue_size=2, data_split_dict=data_split_dict, downsampling_factor=downsampling_factor, angstrom_sigma=angstrom_sigma, patch_size=patch_size, visualize=False)
+    # Gaussian and erosion config options
+    gaussian_offset = 0.5  # 0.5 = distance to voxel centers, 0.0 = distance to voxel corners
+    erosion_radius = 1  # radius for erosion of availability mask (shrinks valid sampling region)
+    erosion_padding = 1.0  # 1.0 = edge voxels survive erosion, 0.0 = edge voxels erode
+
+    write_whole_directory(src=src_root, dst=dst_root, csv_path=csv_path, num_workers=3, queue_size=2, data_split_dict=data_split_dict, downsampling_factor=downsampling_factor, angstrom_sigma=angstrom_sigma, patch_size=patch_size, visualize=False, gaussian_offset=gaussian_offset, erosion_radius=erosion_radius, erosion_padding=erosion_padding)
+    
